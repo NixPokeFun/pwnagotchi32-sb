@@ -1,0 +1,48 @@
+# OS & IDEs
+.DS_Store
+.idea
+.vscode
+
+# Environment & Virtual Environments 
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Compiles & Build Artifacts
+__pycache__
+build
+dist
+pwnagotchi.egg-info
+packer_cache
+output-pwnagotchi
+
+# Images & Emulation
+*.img
+*.img.bmap
+_emulation
+
+# Captures & Network Logs
+*.pcap
+
+# Temporary, Backups & Localization
+*.po~
+_backups
+*backup*.tgz
+*backup*.gz
+
+# Assets & Media
+preview.png
+
+# Custom Configs & Utils
+config.laptop.yml
+_utils
+
+# Image builder directories
+builder/work/
+builder/out/
+builder/cache/
+builder/config.local.env
