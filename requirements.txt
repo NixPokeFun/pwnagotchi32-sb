@@ -1,0 +1,35 @@
+# ---- ML. On armv6l, custom cp39 wheels ----
+torch @ https://github.com/Sniffleupagus/Torch4Pizero/releases/download/v1.0.0/torch-2.1.0a0+gitunknown-cp39-cp39-linux_armv6l.whl ; platform_machine == "armv6l"
+torchvision @ https://github.com/Sniffleupagus/Torch4Pizero/releases/download/v1.0.0/torchvision-0.16.0a0-cp39-cp39-linux_armv6l.whl ; platform_machine == "armv6l"
+torch ; platform_machine != "armv6l"
+torchvision ; platform_machine != "armv6l"
+stable-baselines3>=2.2.1,<=2.4.0
+gym==0.26.2
+shimmy>=1.3.0,<=2.0.0
+gymnasium>=0.29.1,<1.1.0
+numpy>=1.26.4,<2
+
+# ---- Web ----
+flask>=1.1.2
+flask-cors>=3.0.9
+flask-wtf>=0.14.3,<=1.2.2
+websockets>=12.0,<14
+requests>=2.31.0,<=2.32.5
+tweepy>=4.14.0
+
+# ---- Hardware / system ----
+Pillow>=8.1.2,!=8.3.*,<=11.2.1
+RPi.GPIO>=0.7.0
+rpi-hardware-pwm>=0.2.2
+smbus2>=0.4.3
+spidev>=3.5
+inky>=1.5.0
+scapy>=2.5.0
+
+# ---- Utils ----
+PyYAML>=5.3.1
+python-dateutil>=2.9.0.post0
+file-read-backwards>=3.0.0
+gast>=0.5.4
+pycryptodome>=3.20.0
+tomlkit>=0.15.1
