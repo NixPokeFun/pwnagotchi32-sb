@@ -1,0 +1,478 @@
+#!/usr/bin/env python3
+"""pwnygen - interactive /etc/pwnagotchi/config.toml generator."""
+
+import os
+import sys
+
+
+# --- ANSI styling -----------------------------------------------------------
+
+C_CYAN    = "\033[96m"
+C_GREEN   = "\033[92m"
+C_YELLOW  = "\033[93m"
+C_RED     = "\033[91m"
+C_MAGENTA = "\033[95m"
+C_BLUE    = "\033[94m"
+C_BOLD    = "\033[1m"
+C_DIM     = "\033[2m"
+C_RESET   = "\033[0m"
+
+BANNER = (
+    f"{C_CYAN}{C_BOLD}\n"
+    f"  (◕‿‿◕)  PWNYGEN\n"
+    f"  ---------------------------------\n"
+    f"  Interactive config.toml generator\n"
+    f"{C_RESET}"
+)
+
+# Directory holding the pre-bundled .deb packages shipped inside the image.
+PACKAGES_DIR = "/usr/local/share/pwnagotchi/packages"
+
+# Path written on success.
+CONFIG_PATH = "/etc/pwnagotchi/config.toml"
+
+
+# --- Template --------------------------------------------------------------
+
+BASE_CONFIG_TEMPLATE = """[main]
+name = "{main_name}"
+lang = "en"
+iface = "{main_iface}"
+mon_start_cmd = "/usr/bin/monstart"
+mon_stop_cmd = "/usr/bin/monstop"
+no_restart = false
+confd = "/etc/pwnagotchi/conf.d/"
+custom_plugins = "/home/pi/custom_plugins"
+custom_plugin_repos = []
+whitelist = {main_whitelist}
+home_networks = {main_home_networks}
+filter = ""
+
+[main.log]
+path = "/var/log/pwnagotchi.log"
+
+[main.log.rotation]
+enabled = true
+size = "10M"
+
+[main.plugins.control]
+enabled = true
+iface = true
+iface_pos = "5,32"
+blinds = true
+blinds_pos = "50,32"
+wan = true
+wan_pos = "100,0"
+ip = true
+ip_pos = "0,96"
+net_check_interval = 60
+
+[main.plugins.grid]
+enabled = {grid_enabled}
+report = false
+
+[main.plugins.watchdog]
+enabled = true
+max_blind_epochs = {watchdog_max_blind_epochs}
+
+[main.plugins.hashielist]
+enabled = true
+whitelist = true
+vault = true
+
+[main.plugins.gps]
+enabled = false
+speed = 9600
+device = "/dev/ttyACM0"
+custom_pos = false
+lat_pos = "132,85"
+lon_pos = "128,95"
+alt_pos = "132,105"
+
+[main.plugins.webgpsmap]
+enabled = false
+
+[main.plugins.wpa-sec]
+enabled = false
+api_key = ""
+api_url = "https://wpa-sec.stanev.org"
+download_results = true
+download_interval = 3600
+single_files = true
+show_pwd = true
+x_coord = 0
+y_coord = 95
+
+[main.plugins.bt-pan]
+enabled = {bt_pan_enabled}
+dhcp = true
+interval = 60
+
+[main.plugins.memtemp]
+enabled = false
+scale = "celsius"
+orientation = "horizontal"
+fields = "mem, cpu, temp, freq"
+
+[main.plugins.pisugarx]
+enabled = {pisugarx_enabled}
+rotation = false
+default_display = "percentage"
+lowpower_shutdown = true
+lowpower_shutdown_level = 10
+shutdown_delay = 45
+max_charge_voltage_protection = false
+datetime_enabled = {datetime_enabled}
+datetime_position = [0, 92]
+datetime_format = "{datetime_format}"
+
+[main.plugins.session-stats]
+enabled = false
+save_directory = "/var/tmp/pwnagotchi/sessions/"
+
+[ai]
+enabled = {ai_enabled}
+path = "/root/brain.nn"
+laziness = 0.5
+epochs_per_episode = 5
+
+[ai.params]
+gamma = 0.99
+n_steps = 1
+vf_coef = 0.25
+ent_coef = 0.01
+max_grad_norm = 0.5
+learning_rate = 0.001
+verbose = 1
+
+[personality]
+advertise = true
+deauth = true
+associate = true
+channels = []
+min_rssi = -140
+ap_ttl = 150
+sta_ttl = 300
+recon_time = 15
+max_inactive_scale = 2
+recon_inactive_multiplier = 2
+hop_recon_time = 12
+min_recon_time = 10
+max_interactions = 3
+max_misses_for_recon = 5
+excited_num_epochs = 4
+bored_num_epochs = 5
+sad_num_epochs = 11
+bond_encounters_factor = 20000
+home_absence_cooldown = 5
+resume_after_active_epochs = 2
+relocation_bssid_drop_ratio = 0.5
+
+[ui]
+invert = {ui_invert}
+fps = {ui_fps}
+cursor = false
+
+[ui.font]
+name = "DejaVuSansMono"
+size_offset = 0
+
+[ui.faces]
+look_r = ["( ⚆_⚆)", "( ◕_◕)"]
+look_l = ["(☉_☉ )", "(◕_◕ )"]
+look_r_happy = ["( ◕‿◕)", "( ≧◡≦)"]
+look_l_happy = ["(◕‿◕ )", "(≧◡≦ )"]
+sleep = ["(⇀‿‿↼)", "(u‿‿u)", "(-‿‿-)", "(z‿‿z)", "(◡__◡)", "(⇀__↼)", "(u__u)", "(-__-)", "(z__z)"]
+sleep2 = ["(≖‿‿≖)", "(≖__≖)", "(⇀‿‿↼)"]
+awake = "(◕‿‿◕)"
+bored = ["(-__-)", "(—__—)"]
+intense = ["(°▃▃°)", "( ◣_◢)"]
+cool = ["(⌐■_■)", "(♥‿‿♥)"]
+happy = ["(•‿‿•)", "(^‿‿^)", "(^◡◡^)"]
+excited = ["(ᵔ◡◡ᵔ)", "(^◡◡^)", "(✜‿‿✜)"]
+grateful = ["(^‿‿^)", "(ᵔ‿‿ᵔ)"]
+motivated = ["(☼‿‿☼)", "(★‿‿★)"]
+demotivated = "(≖__≖)"
+smart = "(✜‿‿✜)"
+lonely = ["(ب__ب)", "(╥__╥)", "(ب_ب )"]
+sad = ["(╥☁╥ )", "(ب☁ب )", "(╥ب╥ )", "(╥ω╥ )"]
+angry = ["(-_-')", "(`__´)", "(◣__◢)"]
+friend = ["(♥‿‿♥)", "(♡‿‿♡)", "(♥‿♥ )", "(♥ω♥ )"]
+broken = "(☓‿‿☓)"
+debug = "(#__#)"
+upload = "(1__0)"
+upload1 = "(1__1)"
+upload2 = "(0__1)"
+
+[ui.web]
+enabled = true
+address = "0.0.0.0"
+auth = {ui_web_auth}
+username = "{ui_web_username}"
+password = "{ui_web_password}"
+origin = ""
+port = 8080
+on_frame = ""
+
+[ui.display]
+enabled = {ui_display_enabled}
+rotation = 180
+type = "{ui_display_type}"
+
+[bettercap]
+scheme = "http"
+hostname = "localhost"
+port = 8081
+username = "pwnagotchi"
+password = "pwnagotchi"
+handshakes = "/home/pi/handshakes"
+silence = [
+  "ble.device.new",
+  "ble.device.lost",
+  "ble.device.disconnected",
+  "ble.device.connected",
+  "ble.device.service.discovered",
+  "ble.device.characteristic.discovered",
+  "wifi.client.new",
+  "wifi.client.lost",
+  "wifi.client.probe",
+  "wifi.ap.new",
+  "wifi.ap.lost",
+  "mod.started"
+]
+
+[fs.memory]
+enabled = true
+
+[fs.memory.mounts.log]
+enabled = true
+mount = "/var/log"
+size = "50M"
+sync = 60
+zram = true
+rsync = true
+
+[fs.memory.mounts.data]
+enabled = true
+mount = "/var/tmp/pwnagotchi"
+size = "10M"
+sync = 3600
+zram = true
+rsync = true
+"""
+
+
+# --- Prompt helpers --------------------------------------------------------
+
+def prompt(text, default=""):
+    hint = f" {C_DIM}[default: {default}]{C_RESET}" if default else ""
+    raw = input(
+        f"{C_BOLD}{C_BLUE}?[{C_RESET} {C_BOLD}{text}{C_RESET}{hint}\n"
+        f" {C_CYAN}➔{C_RESET} "
+    ).strip()
+    return raw if raw else default
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "true" if value.lower() in ("true", "y", "yes", "1") else "false"
+
+
+def parse_list(value, default_list):
+    """Return a TOML-compatible list literal."""
+    if not value.strip():
+        items = list(default_list)
+    else:
+        items = [item.strip() for item in value.split(",") if item.strip()]
+    return "[" + ", ".join(f'"{item}"' for item in items) + "]"
+
+
+# --- Environment checks ----------------------------------------------------
+
+def require_root():
+    """Abort early unless pwnygen is running with root privileges."""
+    if os.geteuid() != 0:
+        print(f"{C_RED}{C_BOLD}✖  Error:{C_RESET} pwnygen must be run as root.")
+        print(f"   Please run: {C_YELLOW}{C_BOLD}sudo pwnygen{C_RESET}")
+        sys.exit(1)
+
+
+def _dpkg_installed(pkg):
+    return os.system(f"dpkg -s {pkg} >/dev/null 2>&1") == 0
+
+
+def pisugar_present():
+    """Return True only if pisugar-server / pisugar-poweroff are really installed.
+
+    We deliberately do not rely on systemd unit files: a masked or leftover
+    unit can survive ``dpkg --purge`` and would give a false positive.
+    """
+    if _dpkg_installed("pisugar-server") or _dpkg_installed("pisugar-poweroff"):
+        return True
+    for path in (
+        "/usr/bin/pisugar-server", "/usr/local/bin/pisugar-server",
+        "/usr/bin/pisugar-poweroff", "/usr/local/bin/pisugar-poweroff",
+    ):
+        if os.path.exists(path):
+            return True
+    return False
+
+
+def install_pisugar_packages():
+    """Install bundled pisugar .deb files from the local image (offline)."""
+    if not os.path.isdir(PACKAGES_DIR):
+        print(f"{C_RED}✖  Packages dir not found: {PACKAGES_DIR}{C_RESET}")
+        return
+
+    debs = sorted(
+        os.path.join(PACKAGES_DIR, name)
+        for name in os.listdir(PACKAGES_DIR)
+        if name.startswith(("pisugar-server", "pisugar-poweroff")) and name.endswith(".deb")
+    )
+    if not debs:
+        print(f"{C_RED}✖  No PiSugar .deb files found in {PACKAGES_DIR}{C_RESET}")
+        return
+
+    for deb in debs:
+        print(f"{C_CYAN}➔ Installing {os.path.basename(deb)} ...{C_RESET}")
+        rc = os.system(f"dpkg -i '{deb}'")
+        if rc != 0:
+            print(f"{C_YELLOW}⚠  dpkg reported an issue, trying to fix deps (offline)...{C_RESET}")
+            os.system("apt-get install -f -y")
+
+
+# --- Wizard ----------------------------------------------------------------
+
+def collect_answers():
+    """Run the interactive questionnaire and return a plain dict of answers."""
+    answers = {}
+
+    answers["name"] = prompt("Pet's name?", "pwnagotchi")
+    answers["iface"] = prompt("Wi-Fi monitor interface?", "wlan0mon")
+
+    # Kept as-is on purpose: legacy default unchanged.
+    answers["home_networks"] = prompt(
+        "Home Wi-Fi SSIDs/MACs (comma separated)?",
+        "MyHomeWiFi, aa:bb:cc:dd:ee:ff",
+    )
+    answers["whitelist"] = prompt("Ignored APs / Whitelist (comma separated)?", "")
+
+    answers["watchdog_max_blind_epochs"] = prompt(
+        "Reboot after how many blind epochs without interface loss?",
+        "15",
+    )
+
+    answers["ai_enabled"] = prompt("Enable AI brain (y/n)?", "y")
+    answers["grid_enabled"] = prompt("Enable Grid reporting (y/n)?", "y")
+
+    answers["display_enabled"] = prompt("Enable physical screen (y/n)?", "y")
+    answers["display_type"] = prompt("Screen model?", "waveshare_4")
+    answers["ui_invert"] = prompt("Invert screen colors (y/n)?", "n")
+    answers["ui_fps"] = prompt("Screen refresh FPS?", "0.0")
+
+    answers["web_auth"] = parse_bool(prompt("Password-protect Web UI (y/n)?", "n")) == "true"
+    if answers["web_auth"]:
+        answers["web_username"] = prompt("Web UI username?", "changeme")
+        answers["web_password"] = prompt("Web UI password?", "changeme")
+    else:
+        answers["web_username"] = "changeme"
+        answers["web_password"] = "changeme"
+
+    answers["bt_pan"] = prompt("Bluetooth Tethering (y/n)?", "n")
+
+    pisugar_enabled = parse_bool(prompt("Do you have a PiSugar battery board (y/n)?", "n")) == "true"
+    answers["pisugar_enabled"] = pisugar_enabled
+
+    if pisugar_enabled:
+        dt_enabled = parse_bool(prompt("Enable datetime on screen (y/n)?", "n")) == "true"
+        if dt_enabled:
+            answers["datetime_format"] = prompt("Datetime format?", "%H:%M %d-%m")
+        else:
+            answers["datetime_format"] = "%H:%M %d-%m"
+        answers["datetime_enabled"] = dt_enabled
+    else:
+        answers["datetime_enabled"] = False
+        answers["datetime_format"] = "%H:%M %d-%m"
+
+    return answers
+
+
+def render_config(answers):
+    return BASE_CONFIG_TEMPLATE.format(
+        main_name=answers["name"],
+        main_iface=answers["iface"],
+        main_home_networks=parse_list(
+            answers["home_networks"],
+            ["MyHomeWiFi", "aa:bb:cc:dd:ee:ff"],
+        ),
+        main_whitelist=parse_list(answers["whitelist"], []),
+        ai_enabled=parse_bool(answers["ai_enabled"]),
+        grid_enabled=parse_bool(answers["grid_enabled"]),
+        ui_display_enabled=parse_bool(answers["display_enabled"]),
+        ui_display_type=answers["display_type"],
+        ui_invert=parse_bool(answers["ui_invert"]),
+        ui_fps=answers["ui_fps"],
+        ui_web_auth=parse_bool(answers["web_auth"]),
+        ui_web_username=answers["web_username"],
+        ui_web_password=answers["web_password"],
+        bt_pan_enabled=parse_bool(answers["bt_pan"]),
+        watchdog_max_blind_epochs=answers["watchdog_max_blind_epochs"],
+        pisugarx_enabled="true" if answers["pisugar_enabled"] else "false",
+        datetime_enabled="true" if answers["datetime_enabled"] else "false",
+        datetime_format=answers["datetime_format"],
+    )
+
+
+def write_config(content):
+    try:
+        with open(CONFIG_PATH, "w") as fp:
+            fp.write(content)
+        print(f"\n{C_GREEN}{C_BOLD}✔  Success:{C_RESET} {CONFIG_PATH} successfully updated!")
+        return True
+    except PermissionError:
+        print(
+            f"\n{C_RED}{C_BOLD}✖  Error:{C_RESET} Permission denied. "
+            f"Please run with sudo: {C_YELLOW}sudo pwnygen{C_RESET}"
+        )
+    except OSError as exc:
+        print(f"\n{C_RED}{C_BOLD}✖  Error writing file:{C_RESET} {exc}")
+    return False
+
+
+def main():
+    require_root()
+    os.system("clear" if os.name == "posix" else "cls")
+    print(BANNER)
+
+    try:
+        answers = collect_answers()
+    except (KeyboardInterrupt, EOFError):
+        print(f"\n{C_MAGENTA}Aborted.{C_RESET}")
+        sys.exit(130)
+
+    generated_config = render_config(answers)
+
+    print(f"\n{C_YELLOW}{C_BOLD}Configuration generation complete!{C_RESET}")
+    confirm = prompt(
+        f"{C_RED}{C_BOLD}Overwrite {CONFIG_PATH}? (y/n){C_RESET}",
+        "no",
+    ).strip().lower()
+
+    if not confirm.startswith("y"):
+        print(f"\n{C_MAGENTA}Aborted. No changes were made.{C_RESET}")
+        return
+
+    if not write_config(generated_config):
+        return
+
+    if answers["pisugar_enabled"]:
+        if pisugar_present():
+            print(f"\n{C_GREEN}✔  PiSugar already installed — skipping .deb install.{C_RESET}")
+        else:
+            print(f"\n{C_CYAN}➔ Installing PiSugar packages from local image...{C_RESET}")
+            install_pisugar_packages()
+
+
+if __name__ == "__main__":
+    main()
