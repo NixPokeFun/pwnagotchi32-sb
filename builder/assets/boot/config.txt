@@ -1,4 +1,4 @@
-# http://rptl.io/configtxt
+# http://rptl.io
 # Some settings may impact device functionality. See link above for details
 
 # Enable audio (loads snd_bcm2835)
@@ -7,18 +7,8 @@ dtparam=audio=on
 # Additional overlays and parameters are documented
 # /boot/overlays/README
 
-# Automatically load overlays for detected cameras
-camera_auto_detect=1
-
-# Automatically load overlays for detected DSI displays
-display_auto_detect=1
-
 # Automatically load initramfs files, if found
 auto_initramfs=1
-
-# Enable DRM VC4 V3D driver
-dtoverlay=vc4-kms-v3d
-max_framebuffers=2
 
 # Don't have the firmware create an initial video= setting in cmdline.txt - use the kernel's default instead
 disable_fw_kms_setup=1
@@ -32,23 +22,12 @@ disable_overscan=1
 # Run as fast as firmware / board allows
 arm_boost=1
 
-[cm4]
-# Enable host mode on the 2711 built-in XHCI USB controller.
-otg_mode=1
-
 [all]
 dtoverlay=dwc2
 dtparam=i2c1=on
 dtparam=i2c_arm=on
 dtparam=spi=on
-gpu_mem=1
-dtoverlay=dwc2
+gpu_mem=16
 
 [pi0]
-dtoverlay=spi1-3cs
-
-[pi3]
-dtoverlay=spi1-3cs
-
-[pi4]
 dtoverlay=spi1-3cs
