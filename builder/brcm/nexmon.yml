@@ -1,0 +1,47 @@
+# Install nexmon to fix wireless scanning (requires 2.5G of space)
+- name: Clone nexmon repository
+  git:
+    repo: https://github.com/DrSchottky/nexmon.git
+    dest: /usr/local/src/nexmon
+
+- name: Build base firmware tools
+  shell: source ./setup_env.sh && make
+  args:
+    executable: /bin/bash
+    chdir: /usr/local/src/nexmon/
+
+- name: Compile firmware patch for {{ item.name }}
+  shell: source ../../../setup_env.sh && make
+  args:
+    executable: /bin/bash
+    # Fixed: Sets the correct directory context for the compilation process
+    chdir: /usr/local/src/nexmon/patches/{{ item.patch }}/nexmon/
+  environment:
+    QEMU_UNAME: "{{ item.kernel }}"
+    ARCHFLAGS: "{{ item.arch_flags }}"
+
+- name: Install new firmware for {{ item.name }}
+  copy:
+    src: /usr/local/src/nexmon/patches/{{ item.patch }}/nexmon/{{ item.firmware }}
+    dest: /usr/lib/firmware/brcm/{{ item.firmware }}
+    follow: true
+    # Fixed: Tells Ansible that the file already exists on the remote target host
+    remote_src: true
+  environment:
+    QEMU_UNAME: "{{ item.kernel }}"
+    ARCHFLAGS: "{{ item.arch_flags }}"
+
+- name: Backup original driver
+  command: mv /usr/lib/modules/{{ item.kernel }}/kernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko.xz /usr/lib/modules/{{ item.kernel }}/kernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko.xz.orig
+  # Prevents task failure if the backup file was already created by a previous run
+  failed_when: false 
+
+- name: Copy modified driver
+  copy:
+    src: /usr/local/src/nexmon/patches/driver/brcmfmac_6.1.y-nexmon/brcmfmac.ko
+    dest: /usr/lib/modules/{{ item.kernel }}/kernel/drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko
+    # Fixed: Copies the file within the remote host context
+    remote_src: true
+
+- name: Update driver dependencies
+  command: /sbin/depmod -a {{ item.kernel }}

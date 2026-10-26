@@ -1,0 +1,3 @@
+bettercap  https://github.com/NixPokeFun/bettercap/releases/download/v1.0.1/bettercap-2.32.2-armhf.zip      84ec3eea0fc01583e7e580393073c1bd61be6dc94c6ce6d7f005dd4ab70dfdb6  /usr/local/bin/bettercap          0755  bettercap
+libpcap    https://github.com/NixPokeFun/libpcap/releases/download/v1.9.1/libpcap.so.1.9.1.zip              7bf40b63daa63d07f1721a7dc37b1e898b3fb38bc99064583ee70ff0cc596481  /usr/local/lib/libpcap.so.1.9.1   0755  libpcap.so.1.9.1
+pwngrid    https://github.com/jayofelony/pwngrid/releases/download/v1.10.7/pwngrid-1.10.7-armhf.zip         -  /usr/local/bin/pwngrid            0755  pwngrid

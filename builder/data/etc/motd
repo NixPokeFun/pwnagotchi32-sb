@@ -1,0 +1,36 @@
+(◕‿‿◕) pwnagotchi _version-build_status.
+Hi! I'm a pwnagotchi fork by flippedgannet, please take good care of me!
+Here are some basic things you need to know to raise me properly!
+If you want to change my configuration, use /etc/pwnagotchi/config.toml
+All the configuration options can be found on /etc/pwnagotchi/default.toml
+but don't even try to change it; I will always rewrite it to original state!
+If I suddenly refuse to work (ಥ﹏ಥ), try
+~ pwnagotchi --debug
+
+I'm managed by systemd. Here are some basic commands. (^◡◡^)
+~ pwnylog (✜‿‿✜) - simple real-time log viewing
+~ pwnystatus (#__#) - job status check
+~ pwnykill (☓‿‿☓) - service restart in MANU mode
+~ pwnyauto (⌐■_■) - return to AUTO mode
+
+If you have a PiSugar battery or want to simplify the config process:
+~ pwnygen (☼‿‿☼) - interactive wizard, run it as root: sudo pwnygen
+  reads the current defaults from /etc/pwnagotchi/default.toml
+  asks a few questions (name, iface, whitelist, AI, screen, web auth,
+  watchdog blind-epoch limit, PiSugar, ...) and only then writes
+  prompts before overwriting config.toml, nothing is written without a "y"
+  every question has a [default: ...] hint, so plain Enter accepts it
+  if a PiSugar is selected and not yet installed, bundled .deb packages
+  from /usr/local/share/pwnagotchi/packages are installed offline
+  (this step matters mainly because the PiSugar hardware revision can only
+  be chosen interactively, via the debconf prompts shown during .deb setup)
+
+Heads-up ( ≧◡≦)
+After boot in AUTO mode I show a static boot splash while PyTorch and its
+deps bootstrap in the background - no web UI until that's done. Slow SD
+cards make it worse. Don't restart me, I'm not frozen.
+Then the AI starts: epoch 1 is pure observation. By the end of it the
+brain may go into inference or straight into learning, depending on what
+it already knows. Both are normal, and can differ between boots.
+
+Good luck with your training, and be careful! (♥‿‿♥)

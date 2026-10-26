@@ -1,0 +1,44 @@
+# Essential system & networking packages
+apt-utils
+bash-completion
+bluez
+bridge-utils
+ca-certificates
+curl
+dnsmasq
+git
+htop
+iw
+net-tools
+nmap
+ntp
+rsync
+screen
+tcpdump
+vim
+wget
+wpasupplicant
+
+# Python & Web dependencies from apt
+python3-pip
+python3-flask
+python3-flask-cors
+python3-flaskext.wtf
+python3-protobuf
+python3-smbus
+python3-dbus
+python3-gpiozero
+python3-picamera2
+python3-pil
+python3-rpi.gpio
+
+# Hardware, build tools & libraries
+i2c-tools
+build-essential
+dkms
+libatlas-base-dev
+libffi-dev
+libopenblas-dev
+libpcap-dev
+libssl-dev
+raspberrypi-kernel-headers
