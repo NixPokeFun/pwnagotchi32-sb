@@ -1,0 +1,225 @@
+[main]
+name = "pwnagotchi"
+lang = "en"
+iface = "wlan0mon"
+mon_start_cmd = "/usr/bin/monstart"
+mon_stop_cmd = "/usr/bin/monstop"
+no_restart = false
+confd = "/etc/pwnagotchi/conf.d/"
+custom_plugins = "/home/pi/custom_plugins"
+custom_plugin_repos = []
+whitelist = []
+home_networks = []
+filter = ""
+
+[main.log]
+path = "/var/log/pwnagotchi.log"
+
+[main.log.rotation]
+enabled = true
+size = "10M"
+
+[main.plugins.control]
+enabled = true
+iface = true
+iface_pos = "5,32"
+blinds = true
+blinds_pos = "50,32"
+wan = true
+wan_pos = "100,0"
+ip = true
+ip_pos = "0,96"
+net_check_interval = 60
+
+[main.plugins.grid]
+enabled = true
+report = false
+
+[main.plugins.watchdog]
+enabled = true
+max_blind_epochs = 15
+
+[main.plugins.hashielist]
+enabled = true
+whitelist = true
+vault = true
+
+[main.plugins.gps]
+enabled = false
+speed = 9600
+device = "/dev/ttyACM0"
+custom_pos = false
+lat_pos = "132,85"
+lon_pos = "128,95"
+alt_pos = "132,105"
+
+[main.plugins.webgpsmap]
+enabled = false
+
+[main.plugins.wpa-sec]
+enabled = false
+api_key = ""
+api_url = "https://wpa-sec.stanev.org"
+download_results = true
+download_interval = 3600
+single_files = true
+show_pwd = true
+x_coord = 0
+y_coord = 95
+
+[main.plugins.bt-pan]
+enabled = false
+dhcp = true
+interval = 60
+
+[main.plugins.memtemp]
+enabled = false
+scale = "celsius"
+orientation = "horizontal"
+fields = "mem, cpu, temp, freq"
+
+[main.plugins.pisugarx]
+enabled = false
+rotation = false
+default_display = "percentage"
+lowpower_shutdown = true
+lowpower_shutdown_level = 10
+shutdown_delay = 45
+max_charge_voltage_protection = false
+datetime_enabled = false
+datetime_position = [0, 92]
+datetime_format = "%H:%M %d-%m"
+
+[main.plugins.session-stats]
+enabled = false
+save_directory = "/var/tmp/pwnagotchi/sessions/"
+
+[ai]
+enabled = true
+path = "/root/brain.nn"
+laziness = 0.5
+epochs_per_episode = 5
+
+[ai.params]
+gamma = 0.99
+n_steps = 1
+vf_coef = 0.25
+ent_coef = 0.01
+max_grad_norm = 0.5
+learning_rate = 0.001
+verbose = 1
+
+[personality]
+advertise = true
+deauth = true
+associate = true
+channels = []
+min_rssi = -140
+ap_ttl = 150
+sta_ttl = 300
+recon_time = 15
+max_inactive_scale = 2
+recon_inactive_multiplier = 2
+hop_recon_time = 12
+min_recon_time = 10
+max_interactions = 3
+max_misses_for_recon = 5
+excited_num_epochs = 4
+bored_num_epochs = 5
+sad_num_epochs = 11
+bond_encounters_factor = 20000
+home_absence_cooldown = 5
+resume_after_active_epochs = 2
+relocation_bssid_drop_ratio = 0.5
+
+[ui]
+invert = false
+fps = 0.0
+cursor = false
+
+[ui.font]
+name = "DejaVuSansMono"
+size_offset = 0
+
+[ui.faces]
+look_r = ["( ⚆_⚆)", "( ◕_◕)"]
+look_l = ["(☉_☉ )", "(◕_◕ )"]
+look_r_happy = ["( ◕‿◕)", "( ≧◡≦)"]
+look_l_happy = ["(◕‿◕ )", "(≧◡≦ )"]
+sleep = ["(⇀‿‿↼)", "(u‿‿u)", "(-‿‿-)", "(z‿‿z)", "(◡__◡)", "(⇀__↼)", "(u__u)", "(-__-)", "(z__z)"]
+sleep2 = ["(≖‿‿≖)", "(≖__≖)", "(⇀‿‿↼)"]
+awake = "(◕‿‿◕)"
+bored = ["(-__-)", "(—__—)"]
+intense = ["(°▃▃°)", "( ◣_◢)"]
+cool = ["(⌐■_■)", "(♥‿‿♥)"]
+happy = ["(•‿‿•)", "(^‿‿^)", "(^◡◡^)"]
+excited = ["(ᵔ◡◡ᵔ)", "(^◡◡^)", "(✜‿‿✜)"]
+grateful = ["(^‿‿^)", "(ᵔ‿‿ᵔ)"]
+motivated = ["(☼‿‿☼)", "(★‿‿★)"]
+demotivated = "(≖__≖)"
+smart = "(✜‿‿✜)"
+lonely = ["(ب__ب)", "(╥__╥)", "(ب_ب )"]
+sad = ["(╥☁╥ )", "(ب☁ب )", "(╥ب╥ )", "(╥ω╥ )"]
+angry = ["(-_-')", "(`__´)", "(◣__◢)"]
+friend = ["(♥‿‿♥)", "(♡‿‿♡)", "(♥‿♥ )", "(♥ω♥ )"]
+broken = "(☓‿‿☓)"
+debug = "(#__#)"
+upload = "(1__0)"
+upload1 = "(1__1)"
+upload2 = "(0__1)"
+
+[ui.web]
+enabled = true
+address = "0.0.0.0"
+auth = false
+username = "changeme"
+password = "changeme"
+origin = ""
+port = 8080
+on_frame = ""
+
+[ui.display]
+enabled = true
+rotation = 180
+type = "waveshare_4"
+
+[bettercap]
+scheme = "http"
+hostname = "localhost"
+port = 8081
+username = "pwnagotchi"
+password = "pwnagotchi"
+handshakes = "/home/pi/handshakes"
+silence = [
+  "ble.device.new",
+  "ble.device.lost",
+  "ble.device.disconnected",
+  "ble.device.connected",
+  "ble.device.service.discovered",
+  "ble.device.characteristic.discovered",
+  "wifi.client.new",
+  "wifi.client.lost",
+  "wifi.client.probe",
+  "wifi.ap.new",
+  "wifi.ap.lost",
+  "mod.started"
+]
+
+[fs.memory]
+enabled = true
+
+[fs.memory.mounts.log]
+enabled = true
+mount = "/var/log"
+size = "50M"
+sync = 60
+zram = true
+rsync = true
+
+[fs.memory.mounts.data]
+enabled = true
+mount = "/var/tmp/pwnagotchi"
+size = "10M"
+sync = 3600
+zram = true
+rsync = true

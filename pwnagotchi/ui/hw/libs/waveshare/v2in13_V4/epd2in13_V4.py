@@ -1,0 +1,233 @@
+# ****************************************************************
+# * | File        : epd2in13_V4.py
+# * | Function    : Electronic paper driver for Waveshare v4
+# * | This version: V1.0
+# ****************************************************************
+
+import logging
+from . import epdconfig
+
+# Display resolution
+EPD_WIDTH = 122
+EPD_HEIGHT = 250
+
+logger = logging.getLogger(__name__)
+
+
+class EPD:
+    def __init__(self):
+        self.reset_pin = epdconfig.RST_PIN
+        self.dc_pin = epdconfig.DC_PIN
+        self.busy_pin = epdconfig.BUSY_PIN
+        self.cs_pin = epdconfig.CS_PIN
+        self.width = EPD_WIDTH
+        self.height = EPD_HEIGHT
+
+    def reset(self):
+        epdconfig.digital_write(self.reset_pin, 1)
+        epdconfig.delay_ms(20)
+        epdconfig.digital_write(self.reset_pin, 0)
+        epdconfig.delay_ms(2)
+        epdconfig.digital_write(self.reset_pin, 1)
+        epdconfig.delay_ms(20)
+
+    def send_command(self, command):
+        epdconfig.digital_write(self.dc_pin, 0)
+        epdconfig.digital_write(self.cs_pin, 0)
+        epdconfig.spi_writebyte([command])
+        epdconfig.digital_write(self.cs_pin, 1)
+
+    def send_data(self, data):
+        epdconfig.digital_write(self.dc_pin, 1)
+        epdconfig.digital_write(self.cs_pin, 0)
+        epdconfig.spi_writebyte([data])
+        epdconfig.digital_write(self.cs_pin, 1)
+
+    def send_data2(self, data):
+        # Fallback to standard spi_writebyte for legacy epdconfig compatibility
+        epdconfig.digital_write(self.dc_pin, 1)
+        epdconfig.digital_write(self.cs_pin, 0)
+        if hasattr(epdconfig, 'spi_writebyte2'):
+            epdconfig.spi_writebyte2(data)
+        else:
+            for byte in data:
+                epdconfig.spi_writebyte([byte])
+        epdconfig.digital_write(self.cs_pin, 1)
+
+    def ReadBusy(self):
+        logger.debug("e-Paper busy")
+        while epdconfig.digital_read(self.busy_pin) == 1:
+            epdconfig.delay_ms(10)
+        logger.debug("e-Paper busy release")
+
+    def TurnOnDisplay(self):
+        self.send_command(0x22)
+        self.send_data(0xF7)
+        self.send_command(0x20)
+        self.ReadBusy()
+
+    def TurnOnDisplay_Fast(self):
+        self.send_command(0x22)
+        self.send_data(0xC7)
+        self.send_command(0x20)
+        self.ReadBusy()
+
+    def TurnOnDisplayPart(self):
+        self.send_command(0x22)
+        self.send_data(0xFF)
+        self.send_command(0x20)
+        self.ReadBusy()
+
+    def SetWindow(self, x_start, y_start, x_end, y_end):
+        self.send_command(0x44)
+        self.send_data((x_start >> 3) & 0xFF)
+        self.send_data((x_end >> 3) & 0xFF)
+
+        self.send_command(0x45)
+        self.send_data(y_start & 0xFF)
+        self.send_data((y_start >> 8) & 0xFF)
+        self.send_data(y_end & 0xFF)
+        self.send_data((y_end >> 8) & 0xFF)
+
+    def SetCursor(self, x, y):
+        self.send_command(0x4E)
+        self.send_data(x & 0xFF)
+
+        self.send_command(0x4F)
+        self.send_data(y & 0xFF)
+        self.send_data((y >> 8) & 0xFF)
+
+    def init(self):
+        if epdconfig.module_init() != 0:
+            return -1
+
+        self.reset()
+        self.ReadBusy()
+
+        self.send_command(0x12)  # SWRESET
+        self.ReadBusy()
+
+        self.send_command(0x01)  # Driver output control
+        self.send_data(0xF9)
+        self.send_data(0x00)
+        self.send_data(0x00)
+
+        self.send_command(0x11)  # Data entry mode
+        self.send_data(0x03)
+
+        self.SetWindow(0, 0, self.width - 1, self.height - 1)
+        self.SetCursor(0, 0)
+
+        self.send_command(0x3C)
+        self.send_data(0x05)
+
+        self.send_command(0x21)  # Display update control
+        self.send_data(0x00)
+        self.send_data(0x80)
+
+        self.send_command(0x18)
+        self.send_data(0x80)
+
+        self.ReadBusy()
+        return 0
+
+    def init_fast(self):
+        if epdconfig.module_init() != 0:
+            return -1
+
+        self.reset()
+
+        self.send_command(0x12)  # SWRESET
+        self.ReadBusy()
+
+        self.send_command(0x18)
+        self.send_command(0x80)
+
+        self.send_command(0x11)
+        self.send_data(0x03)
+
+        self.SetWindow(0, 0, self.width - 1, self.height - 1)
+        self.SetCursor(0, 0)
+
+        self.send_command(0x22)
+        self.send_data(0xB1)
+        self.send_command(0x20)
+        self.ReadBusy()
+
+        self.send_command(0x1A)
+        self.send_data(0x64)
+        self.send_data(0x00)
+
+        self.send_command(0x22)
+        self.send_data(0x91)
+        self.send_command(0x20)
+        self.ReadBusy()
+
+        return 0
+
+    def getbuffer(self, image):
+        img = image
+        imwidth, imheight = img.size
+        if imwidth == self.width and imheight == self.height:
+            img = img.convert('1')
+        elif imwidth == self.height and imheight == self.width:
+            img = img.rotate(90, expand=True).convert('1')
+        else:
+            logger.warning(f"Wrong image dimensions: must be {self.width}x{self.height}")
+            return [0x00] * (int(self.width / 8) * self.height)
+
+        buf = bytearray(img.tobytes('raw'))
+        return buf
+
+    def display(self, image):
+        self.send_command(0x24)
+        self.send_data2(image)
+        self.TurnOnDisplay()
+
+    def display_fast(self, image):
+        self.send_command(0x24)
+        self.send_data2(image)
+        self.TurnOnDisplay_Fast()
+
+    def displayPartial(self, image):
+        epdconfig.digital_write(self.reset_pin, 0)
+        epdconfig.delay_ms(1)
+        epdconfig.digital_write(self.reset_pin, 1)
+
+        self.send_command(0x3C)  # BorderWavefrom
+        self.send_data(0x80)
+
+        self.send_command(0x01)  # Driver output control
+        self.send_data(0xF9)
+        self.send_data(0x00)
+        self.send_data(0x00)
+
+        self.send_command(0x11)  # Data entry mode
+        self.send_data(0x03)
+
+        self.SetWindow(0, 0, self.width - 1, self.height - 1)
+        self.SetCursor(0, 0)
+
+        self.send_command(0x24)  # WRITE_RAM
+        self.send_data2(image)
+        self.TurnOnDisplayPart()
+
+    def displayPartBaseImage(self, image):
+        self.send_command(0x24)
+        self.send_data2(image)
+
+        self.send_command(0x26)
+        self.send_data2(image)
+        self.TurnOnDisplay()
+
+    def Clear(self, color=0xFF):
+        linewidth = int(self.width / 8) if self.width % 8 == 0 else int(self.width / 8) + 1
+        self.send_command(0x24)
+        self.send_data2([color] * int(self.height * linewidth))
+        self.TurnOnDisplay()
+
+    def sleep(self):
+        self.send_command(0x10)
+        self.send_data(0x01)
+        epdconfig.delay_ms(2000)
+        epdconfig.module_exit()
