@@ -4,7 +4,9 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import time
 import zipfile
 from contextlib import contextmanager
@@ -18,6 +20,13 @@ from pwnagotchi.utils import StatusFile
 
 API_URL = "https://api.github.com/repos/%s/releases/latest"
 HTTP_TIMEOUT = 20
+PKG_DEFAULT_REPO = 'NixPokeFun/pwnagotchi32-sb'
+PKG_DEFAULT_BRANCH = 'main'
+PKG_STATE_FILE = '/root/.auto-update-pkg'
+PKG_BIN_STATE_FILE = '/root/.auto-update-pkg-bin'
+PKG_BIN_DIR = '/usr/local/bin'
+PKG_BINARIES = ('pwnagotchi', 'pwnygen')
+PKG_SERVICE = 'pwnagotchi'
 CHECKSUM_EXT = ('.sha256', '.sha256sum', '.sha256sums')
 
 # Default repositories. Can be overridden in config.toml:
@@ -78,9 +87,9 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def run(cmd):
+def run(cmd, timeout=60, cwd=None):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          universal_newlines=True, timeout=60)
+                          universal_newlines=True, timeout=timeout, cwd=cwd)
 
 
 def download(url, dest):
@@ -296,14 +305,263 @@ def install(agent, display, info, work_root):
     time.sleep(3)
 
 
+# --------------------------------------------------- pwnagotchi package ---
+
+def read_state(path):
+    try:
+        with open(path, 'rt') as fp:
+            return fp.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def write_state(path, value):
+    tmp = path + '.tmp'
+    with open(tmp, 'wt') as fp:
+        fp.write(value)
+    os.replace(tmp, path)
+
+
+def resolve_package_dir(option):
+    """Where the live pwnagotchi package is installed. Refuses anything that does not look
+    like an installed package (for example a git checkout) unless the path is set explicitly."""
+    path = os.path.realpath(option or os.path.dirname(os.path.abspath(pwnagotchi.__file__)))
+    if os.path.basename(path) != 'pwnagotchi':
+        raise RuntimeError("unexpected package directory: %s" % path)
+    if not option and not re.search(r'(dist|site)-packages', path):
+        raise RuntimeError("pwnagotchi is not running from dist-packages/site-packages (%s); "
+                           "set pwnagotchi_dir explicitly to allow updating it" % path)
+    return path
+
+
+def check_package(session, repo, branch):
+    """Checks package and bundled binary revisions independently."""
+    resp = session.get("https://api.github.com/repos/%s/commits/%s" % (repo, branch),
+                       timeout=HTTP_TIMEOUT)
+    if resp.status_code != 200:
+        raise RuntimeError("GitHub API returned %s for %s@%s" % (resp.status_code, repo, branch))
+    data = resp.json()
+    sha = data['sha']
+    installed = read_state(PKG_STATE_FILE)
+    binaries_installed = read_state(PKG_BIN_STATE_FILE)
+    update_package = installed != sha
+    update_binaries = binaries_installed != sha
+    if not update_package and not update_binaries:
+        return None
+    return {
+        'repo': repo, 'branch': branch, 'sha': sha, 'label': sha[:7],
+        'installed': installed[:7] if installed else None,
+        'binaries_installed': binaries_installed[:7] if binaries_installed else None,
+        'update_package': update_package,
+        'update_binaries': update_binaries,
+        'message': data['commit']['message'].split('\n')[0],
+        # Pin the archive to the exact commit that was checked, not to the moving branch.
+        'url': "https://github.com/%s/archive/%s.zip" % (repo, sha),
+    }
+
+
+def extract_package_dir(zip_path, dest):
+    """Extracts only '<root>/pwnagotchi/**' from a GitHub source archive into dest."""
+    count = 0
+    with zipfile.ZipFile(zip_path) as z:
+        for member in z.infolist():
+            parts = member.filename.split('/')
+            if len(parts) < 3 or parts[1] != 'pwnagotchi' or member.is_dir():
+                continue
+            rel = os.path.normpath(os.path.join(*parts[2:]))
+            if os.path.isabs(rel) or rel.split(os.sep)[0] == '..':
+                raise RuntimeError("unsafe path in archive: %s" % member.filename)
+            mode = member.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                continue
+            target = os.path.join(dest, rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(member) as src, open(target, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+            if mode & 0o111:
+                os.chmod(target, 0o755)
+            count += 1
+    if count == 0 or not os.path.isfile(os.path.join(dest, '__init__.py')):
+        raise RuntimeError("no valid pwnagotchi/ package found in the archive")
+
+
+def validate_executable(path, name):
+    """Reject empty or unrecognized files before placing them in the executable path."""
+    if os.path.getsize(path) == 0:
+        raise RuntimeError("%s is empty" % name)
+    with open(path, 'rb') as fp:
+        header = fp.read(4)
+    if header != b'\x7fELF' and not header.startswith(b'#!'):
+        raise RuntimeError("%s is not a supported Linux executable" % name)
+
+
+def extract_package_binaries(zip_path, dest):
+    """Extracts the two maintained executables from the repository's top-level bin/ folder."""
+    os.makedirs(dest, exist_ok=True)
+    found = set()
+    with zipfile.ZipFile(zip_path) as z:
+        for member in z.infolist():
+            parts = member.filename.replace('\\', '/').split('/')
+            if member.is_dir() or len(parts) < 3 or parts[-2] != 'bin':
+                continue
+            name = parts[-1]
+            if name not in PKG_BINARIES:
+                continue
+            if name in found:
+                raise RuntimeError("duplicate %s entry in the source archive" % name)
+            mode = member.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                raise RuntimeError("refusing symlink for bundled executable: %s" % name)
+            target = os.path.join(dest, name)
+            with z.open(member) as src, open(target, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+            validate_executable(target, name)
+            os.chmod(target, 0o755)
+            found.add(name)
+
+    missing = sorted(set(PKG_BINARIES) - found)
+    if missing:
+        raise RuntimeError("source archive is missing bin/%s" % ', bin/'.join(missing))
+
+
+def swap_package_binaries(new_dir, live_dir):
+    """Atomically installs both bundled executables and rolls back the pair on failure."""
+    os.makedirs(live_dir, exist_ok=True)
+    completed = []
+    temporary_paths = []
+    try:
+        for name in PKG_BINARIES:
+            src = os.path.join(new_dir, name)
+            dest = os.path.join(live_dir, name)
+            tmp = dest + '.new'
+            backup = dest + '.bak'
+            temporary_paths.append(tmp)
+
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+            if os.path.lexists(backup):
+                os.unlink(backup)
+
+            shutil.copy2(src, tmp)
+            os.chmod(tmp, 0o755)
+            validate_executable(tmp, name)
+
+            had_old = os.path.lexists(dest)
+            if had_old:
+                shutil.copy2(dest, backup)
+            os.replace(tmp, dest)
+            completed.append((dest, backup, had_old))
+    except Exception:
+        for dest, backup, had_old in reversed(completed):
+            try:
+                if had_old:
+                    os.replace(backup, dest)
+                elif os.path.lexists(dest):
+                    os.unlink(dest)
+            except Exception as rollback_error:
+                logging.critical("[update] failed to roll back %s: %s", dest, rollback_error)
+        for tmp in temporary_paths:
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
+        raise
+
+
+def swap_package(new_dir, live_dir):
+    """Replace live_dir with new_dir via same-filesystem renames. The previous package is kept as
+    '.pwnagotchi.bak' next to it. Rolls back if the new package fails to import."""
+    parent = os.path.dirname(live_dir)
+    staging = os.path.join(parent, '.pwnagotchi.new')
+    backup = os.path.join(parent, '.pwnagotchi.bak')
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.rmtree(backup, ignore_errors=True)
+
+    shutil.copytree(new_dir, staging)
+    swapped = False
+    try:
+        os.rename(live_dir, backup)
+        swapped = True
+        os.rename(staging, live_dir)
+        # cwd=parent makes "import pwnagotchi" resolve to exactly the directory we just swapped in
+        res = run([sys.executable, '-c', 'import pwnagotchi'], timeout=120, cwd=parent)
+        if res.returncode != 0:
+            raise RuntimeError("new package fails to import: %s" % res.stdout.strip()[-500:])
+    except Exception:
+        logging.error("[update] rolling back %s" % live_dir)
+        if swapped:
+            shutil.rmtree(live_dir, ignore_errors=True)
+            os.rename(backup, live_dir)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def install_package(display, info, work_root, live_dir=None, bin_dir=PKG_BIN_DIR):
+    """Installs requested repository components and records each successful revision."""
+    label = info['label']
+    path = os.path.join(work_root, 'pwnagotchi-source')
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path)
+
+    package_installed = False
+    binaries_installed = False
+    try:
+        zip_path = os.path.join(path, 'source.zip')
+        display.update(force=True, new_data={'status': 'Downloading pwnagotchi %s ...' % label})
+        logging.info("[update] downloading %s" % info['url'])
+        download(info['url'], zip_path)
+
+        if info.get('update_package'):
+            try:
+                display.update(force=True, new_data={'status': 'Extracting pwnagotchi %s ...' % label})
+                new_dir = os.path.join(path, 'pwnagotchi')
+                extract_package_dir(zip_path, new_dir)
+
+                display.update(force=True, new_data={'status': 'Verifying pwnagotchi %s ...' % label})
+                res = run([sys.executable, '-m', 'compileall', '-q', new_dir], timeout=300)
+                if res.returncode != 0:
+                    raise RuntimeError("syntax check failed: %s" % res.stdout.strip()[-500:])
+
+                display.update(force=True, new_data={'status': 'Installing pwnagotchi %s ...' % label})
+                swap_package(new_dir, live_dir)
+                write_state(PKG_STATE_FILE, info['sha'])
+                package_installed = True
+            except Exception as e:
+                logging.error("[update] pwnagotchi package update failed: %s" % e)
+
+        if info.get('update_binaries'):
+            try:
+                display.update(force=True, new_data={'status': 'Extracting pwnagotchi binaries %s ...' % label})
+                new_bin_dir = os.path.join(path, 'bin')
+                extract_package_binaries(zip_path, new_bin_dir)
+
+                display.update(force=True, new_data={'status': 'Verifying pwnagotchi binaries %s ...' % label})
+                for name in PKG_BINARIES:
+                    validate_executable(os.path.join(new_bin_dir, name), name)
+
+                display.update(force=True, new_data={'status': 'Installing pwnagotchi binaries %s ...' % label})
+                swap_package_binaries(new_bin_dir, bin_dir)
+                write_state(PKG_BIN_STATE_FILE, info['sha'])
+                binaries_installed = True
+            except Exception as e:
+                logging.error("[update] pwnagotchi binary update failed: %s" % e)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+    return package_installed, binaries_installed
+
+
+def restart_pwnagotchi():
+    # --no-block: this plugin runs inside the service that is about to be restarted
+    subprocess.Popen(['systemctl', 'restart', '--no-block', PKG_SERVICE])
+
+
 # ----------------------------------------------------------------- plugin ---
 
 class AutoUpdate(plugins.Plugin):
-    __author__ = 'evilsocket@gmail.com, flippedgannet'
-    __version__ = '1.0.0'
+    __author__ = 'evilsocket@gmail.com, NixPokeFun'
+    __version__ = '2.1.0'
     __name__ = 'auto-update'
     __license__ = 'GPL3'
-    __description__ = 'Checks for bettercap/pwngrid updates and installs them (checksum + rollback).'
+    __description__ = 'Updates bettercap/pwngrid and bundled pwnagotchi executables, plus the pwnagotchi package, with verification and rollback.'
 
     def __init__(self):
         self.ready = False
@@ -356,8 +614,32 @@ class AutoUpdate(plugins.Plugin):
                             info['repo'], info['current'], info['available']))
                         to_install.append(info)
 
+                pkg_info = None
+                if self.options.get('update_pwnagotchi', False):
+                    try:
+                        pkg_info = check_package(
+                            session,
+                            self.options.get('pwnagotchi_repo', PKG_DEFAULT_REPO),
+                            self.options.get('pwnagotchi_branch', PKG_DEFAULT_BRANCH))
+                        if pkg_info:
+                            components = []
+                            if pkg_info['update_package']:
+                                components.append('package')
+                            if pkg_info['update_binaries']:
+                                components.append('bin/pwnagotchi and bin/pwnygen')
+                            logging.warning("[update] pwnagotchi %s update to %s (%s)" % (
+                                ' + '.join(components), pkg_info['label'], pkg_info['message']))
+                    except Exception as e:
+                        logging.error("[update] pwnagotchi package: %s" % e)
+
                 installed = 0
-                if to_install:
+                pkg_installed = False
+                pkg_bins_installed = False
+                source_updates = 0
+                if pkg_info:
+                    source_updates = int(pkg_info['update_package']) + int(pkg_info['update_binaries'])
+                num_updates = len(to_install) + source_updates
+                if num_updates:
                     if do_install:
                         for info in to_install:
                             plugins.on('updating')
@@ -366,16 +648,33 @@ class AutoUpdate(plugins.Plugin):
                                 installed += 1
                             except Exception as e:
                                 logging.error("[update] failed to update %s: %s" % (info['name'], e))
+                        # Apply the Python package and bundled executables after standalone services.
+                        if pkg_info:
+                            plugins.on('updating')
+                            try:
+                                live_dir = None
+                                if pkg_info['update_package']:
+                                    live_dir = resolve_package_dir(self.options.get('pwnagotchi_dir'))
+                                bin_dir = self.options.get('pwnagotchi_bin_dir', PKG_BIN_DIR)
+                                pkg_installed, pkg_bins_installed = install_package(
+                                    display, pkg_info, work_root, live_dir, bin_dir)
+                            except Exception as e:
+                                logging.error("[update] failed to update pwnagotchi source: %s" % e)
                     else:
                         prev_status = '%d new update%s available!' % (
-                            len(to_install), 's' if len(to_install) > 1 else '')
+                            num_updates, 's' if num_updates > 1 else '')
 
                 logging.info("[update] done")
                 self.status.update()
 
-                if installed and self.options.get('reboot', False):
+                if (installed or pkg_installed or pkg_bins_installed) and self.options.get('reboot', False):
                     display.update(force=True, new_data={'status': 'Rebooting ...'})
                     pwnagotchi.reboot()
+                elif pkg_installed or pkg_bins_installed:
+                    # Updated package code or executables take effect after the service restarts.
+                    display.update(force=True, new_data={'status': 'Restarting ...'})
+                    restart_pwnagotchi()
+                    return
 
             except Exception as e:
                 logging.error("[update] %s" % e)
