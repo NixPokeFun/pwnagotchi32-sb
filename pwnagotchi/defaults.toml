@@ -26,6 +26,9 @@ install = true
 token = ""
 reboot = false
 work_dir = "/opt/auto-update"
+update_pwnagotchi = true
+pwnagotchi_repo = "NixPokeFun/pwnagotchi32-sb"
+pwnagotchi_branch = "main"
 
 [main.plugins.control]
 enabled = true
