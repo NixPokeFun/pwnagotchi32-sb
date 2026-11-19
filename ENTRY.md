@@ -101,6 +101,55 @@ The ultra-lightweight `bt-pan` script manages background Bluetooth NAP auto-conn
 
 When connected, the `control` UI automatically updates the status line to `WAN: BT` and displays the dynamic Bluetooth IP address. This allows you to immediately access the Pwnagotchi Web UI at port `8080` right from your phone's browser on the move.
 
+### Auto-Update
+
+The `auto-update` plugin checks for updates when internet access is available. It supports GitHub Releases for `bettercap` and `pwngrid`, plus source-based updates for the Pwnagotchi package and the bundled `pwnagotchi` and `pwnygen` executables.
+
+The bundled executables are downloaded from `bin/pwnagotchi` and `bin/pwnygen` in the configured repository and installed to `/usr/local/bin/`. Package and executable update states are tracked independently.
+
+1. **Enable it in `/etc/pwnagotchi/config.toml`:**
+   ```toml
+   [main.plugins.auto-update]
+   enabled = true
+   interval = 1
+   install = true
+   token = ""
+   reboot = false
+   update_pwnagotchi = true
+   pwnagotchi_repo = "NixPokeFun/pwnagotchi32-sb"
+   pwnagotchi_branch = "main"
+   ```
+   If the plugin is not included in your image, copy `auto-update.py` to `/home/pi/custom_plugins/`.
+
+2. **Key options:**
+   - `interval` - check interval in hours; required.
+   - `install` - set to `true` to install updates automatically, or `false` to report available updates only.
+   - `token` - optional GitHub API token.
+   - `reboot` - defaults to `false`; source-based updates restart the Pwnagotchi service instead of rebooting the device.
+   - `update_pwnagotchi` - enables updates for the Python package and the bundled `pwnagotchi`/`pwnygen` executables.
+   - `pwnagotchi_repo` / `pwnagotchi_branch` - source repository and branch; default to `NixPokeFun/pwnagotchi32-sb` and `main`.
+   - `pwnagotchi_dir` - optional override for the installed Python package directory.
+   - `work_dir` - optional staging directory; defaults to `/opt/auto-update`.
+   - `repos` - optional override for the `bettercap` and `pwngrid` release repositories.
+
+**Update targets:**
+
+| Component | Source | Default destination |
+|---|---|---|
+| `bettercap`, `pwngrid` | Their GitHub Releases | `/usr/local/bin/` |
+| Pwnagotchi package | Latest commit on the configured branch | Detected installed `pwnagotchi/` package |
+| `pwnagotchi`, `pwnygen` | `bin/` at the selected repository commit | `/usr/local/bin/` |
+
+**Safety and recovery:**
+
+- Release binaries require a matching SHA256 checksum and must pass ELF validation.
+- Source-based executables are validated before installation and receive executable permissions.
+- The package is syntax-checked before replacement. Previous files are backed up, and the updater attempts to roll back failed replacements.
+- Update state is tracked separately, so a failed target can be retried without blocking other updates.
+- Only the managed package directory and named executables are replaced; system dependencies and service definitions are not updated. Keep custom plugins in `/home/pi/custom_plugins/`.
+
+Logs use the `[update]` prefix. Follow them with `pwnylog`.
+
 ## System Resilience & SD Protection
 
 The OS includes built-in safeguards to prevent data loss and protect physical hardware during unexpected shutdowns or software failures:
