@@ -19,6 +19,14 @@ path = "/var/log/pwnagotchi.log"
 enabled = true
 size = "10M"
 
+[main.plugins.auto-update]
+enabled = true
+interval = 1
+install = true
+token = ""
+reboot = false
+work_dir = "/opt/auto-update"
+
 [main.plugins.control]
 enabled = true
 iface = true
