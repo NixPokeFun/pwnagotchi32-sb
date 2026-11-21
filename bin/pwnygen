@@ -55,6 +55,17 @@ path = "/var/log/pwnagotchi.log"
 enabled = true
 size = "10M"
 
+[main.plugins.auto-update]
+enabled = {auto_update_enabled}
+interval = 1
+install = true
+token = ""
+reboot = false
+work_dir = "/opt/auto-update"
+update_pwnagotchi = true
+pwnagotchi_repo = "NixPokeFun/pwnagotchi32-sb"
+pwnagotchi_branch = "main"
+
 [main.plugins.control]
 enabled = true
 iface = true
@@ -350,6 +361,7 @@ def collect_answers():
 
     answers["name"] = prompt("Pet's name?", "pwnagotchi")
     answers["iface"] = prompt("Wi-Fi monitor interface?", "wlan0mon")
+    answers["auto_update"] = prompt("Enable automatic updates (y/n)?", "y")
 
     # Kept as-is on purpose: legacy default unchanged.
     answers["home_networks"] = prompt(
@@ -402,6 +414,7 @@ def render_config(answers):
     return BASE_CONFIG_TEMPLATE.format(
         main_name=answers["name"],
         main_iface=answers["iface"],
+        auto_update_enabled=parse_bool(answers["auto_update"]),
         main_home_networks=parse_list(
             answers["home_networks"],
             ["MyHomeWiFi", "aa:bb:cc:dd:ee:ff"],
