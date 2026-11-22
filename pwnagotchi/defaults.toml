@@ -102,6 +102,10 @@ scale = "celsius"
 orientation = "horizontal"
 fields = "mem, cpu, temp, freq"
 
+[main.plugins.portrait-mode]
+enabled = false
+persist = true
+
 [main.plugins.pisugarx]
 enabled = false
 rotation = false
