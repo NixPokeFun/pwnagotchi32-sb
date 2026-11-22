@@ -69,12 +69,14 @@ pwnagotchi_branch = "main"
 [main.plugins.control]
 enabled = true
 iface = true
-iface_pos = "5,32"
 blinds = true
-blinds_pos = "50,32"
+health = true
 wan = true
-wan_pos = "100,0"
 ip = true
+iface_pos = "5,32"
+blinds_pos = "50,32"
+health_pos = "80,32"
+wan_pos = "100,0"
 ip_pos = "0,96"
 net_check_interval = 60
 
@@ -83,8 +85,19 @@ enabled = {grid_enabled}
 report = false
 
 [main.plugins.watchdog]
-enabled = true
-max_blind_epochs = {watchdog_max_blind_epochs}
+enabled = {watchdog_enabled}
+interface = "wlan0mon"
+monitor_interface = "wlan0mon"
+check_interval = 1
+journal_interval = 5
+recovery_cooldown = 180
+blind_threshold = 2
+bettercap_grace = 180
+reboot_on_failure = true
+reboot_window = 1800
+reboot_max = 3
+maintenance_marker = "/run/pwnagotchi-automatic-updates-maintenance"
+crash_log = "/var/log/pwnagotchi_crashes.log"
 
 [main.plugins.hashielist]
 enabled = true
@@ -370,11 +383,7 @@ def collect_answers():
     )
     answers["whitelist"] = prompt("Ignored APs / Whitelist (comma separated)?", "")
 
-    answers["watchdog_max_blind_epochs"] = prompt(
-        "Reboot after how many blind epochs without interface loss?",
-        "15",
-    )
-
+    answers["watchdog_enabled"] = prompt("Enable brcmf recovery (y/n)?", "y")
     answers["ai_enabled"] = prompt("Enable AI brain (y/n)?", "y")
     answers["grid_enabled"] = prompt("Enable Grid reporting (y/n)?", "y")
 
@@ -430,7 +439,7 @@ def render_config(answers):
         ui_web_username=answers["web_username"],
         ui_web_password=answers["web_password"],
         bt_pan_enabled=parse_bool(answers["bt_pan"]),
-        watchdog_max_blind_epochs=answers["watchdog_max_blind_epochs"],
+        watchdog_enabled=parse_bool(answers["watchdog_enabled"]),
         pisugarx_enabled="true" if answers["pisugar_enabled"] else "false",
         datetime_enabled="true" if answers["datetime_enabled"] else "false",
         datetime_format=answers["datetime_format"],
