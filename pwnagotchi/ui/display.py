@@ -15,6 +15,10 @@ class Display(View):
         self._enabled = config['enabled']
         self._rotation = config['rotation']
 
+        # held while a frame is being pushed to the panel and while the
+        # implementation is swapped at runtime, so the two never overlap
+        self._render_lock = threading.Lock()
+
         self.init_display()
 
         self._canvas_next_event = threading.Event()
@@ -48,6 +52,21 @@ class Display(View):
 
     def is_waveshare_v4(self):
         return self._implementation.name == 'waveshare_4'
+
+    def is_waveshare_v1_portrait(self):
+        return self._implementation.name == 'waveshare_1_portrait'
+
+    def is_waveshare_v2_portrait(self):
+        return self._implementation.name == 'waveshare_2_portrait'
+
+    def is_waveshare_v3_portrait(self):
+        return self._implementation.name == 'waveshare_3_portrait'
+
+    def is_waveshare_v4_portrait(self):
+        return self._implementation.name == 'waveshare_4_portrait'
+
+    def is_portrait(self):
+        return self._width < self._height
 
     def is_waveshare2in13b_v3(self):
         return self._implementation.name == 'waveshare2in13b_v3'
@@ -120,6 +139,14 @@ class Display(View):
     def clear(self):
         self._implementation.clear()
 
+    def apply_implementation(self, impl):
+        # wait for a refresh in flight, bring the new panel driver up and only
+        # then let the view switch its layout over to it
+        with self._render_lock:
+            if self._enabled:
+                impl.initialize()
+            super(Display, self).apply_implementation(impl)
+
     def image(self):
         img = None
         if self._canvas is not None:
@@ -132,7 +159,14 @@ class Display(View):
         while True:
             self._canvas_next_event.wait()
             self._canvas_next_event.clear()
-            self._implementation.render(self._canvas_next)
+            try:
+                with self._render_lock:
+                    self._implementation.render(self._canvas_next)
+            except Exception as e:
+                # this thread drives the physical screen for the whole process
+                # lifetime, one bad render (SPI hiccup, a frame left over from
+                # a runtime orientation switch) must not kill it silently
+                logging.error("error while rendering: %s" % e)
 
     def _on_view_rendered(self, img):
         try:

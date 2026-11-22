@@ -55,10 +55,6 @@ class View(object):
             mode_widget = Text(value='WAIT', position=self._layout['mode'],
                                font=fonts.Bold, color=self._fg_color)
 
-        last_pwnd_max_x = self._layout.get('last_pwnd_max_x')
-        if last_pwnd_max_x is None and 'mode' in self._layout:
-            last_pwnd_max_x = self._layout['mode'][0] - 6
-
         self._state = State(state={
             'channel': LabeledValue(color=self._fg_color, label='CH', value='00', position=self._layout['channel'],
                                     label_font=fonts.Bold,
@@ -74,11 +70,12 @@ class View(object):
             'line1': Line(self._layout['line1'], color=self._fg_color),
             'line2': Line(self._layout['line2'], color=self._fg_color),
 
-            'face': Text(value=faces.SLEEP, position=self._layout['face'], color=self._fg_color, font=fonts.Huge),
+            'face': Text(value=faces.SLEEP, position=self._layout['face'], color=self._fg_color, font=fonts.Huge,
+                         center_width=self._layout.get('face_width')),
 
             'friend_face': Text(value=None, position=self._layout['friend_face'], font=fonts.Bold, color=self._fg_color),
             'friend_name': Text(value=None, position=self._layout['friend_name'], font=fonts.BoldSmall,
-                                color=self._fg_color),
+                                color=self._fg_color, max_x=self._layout.get('friend_name_max_x')),
 
             'name': Text(value='%s>' % 'pwnagotchi', position=self._layout['name'], color=self._fg_color, font=fonts.Bold),
 
@@ -88,14 +85,17 @@ class View(object):
                            font=self._layout['status']['font'],
                            wrap=True,
                            # the current maximum number of characters per line, assuming each character is 6 pixels wide
-                           max_length=self._layout['status']['max']),
+                           max_length=self._layout['status']['max'],
+                           # optional keys, used by the portrait layouts: cap the line count and center the text
+                           max_lines=self._layout['status'].get('lines', 0),
+                           center_width=self._layout['status'].get('width')),
 
             'shakes': LabeledValue(label='PWND ', value='0 (00)', color=self._fg_color,
                                    position=self._layout['shakes'], label_font=fonts.Bold,
                                    text_font=fonts.Medium),
             'last_pwnd_name': Text(value='', position=tuple(self._layout['shakes']),
                                    font=fonts.Medium, color=self._fg_color,
-                                   max_x=last_pwnd_max_x),
+                                   max_x=self._last_pwnd_limit()),
             'mode': mode_widget,
         })
 
@@ -114,10 +114,92 @@ class View(object):
 
         ROOT = self
 
+    def _last_pwnd_limit(self):
+        # right-most x the last-handshake name may reach before it gets truncated
+        limit = self._layout.get('last_pwnd_max_x')
+        if limit is None and 'mode' in self._layout:
+            limit = self._layout['mode'][0] - 6
+        return limit
+
+    def apply_implementation(self, impl):
+        """Switch to another display implementation at runtime.
+
+        Re-reads the layout of ``impl`` and moves, re-fonts and re-limits every
+        core element accordingly, exactly as if the view had been built with
+        that implementation. Used by the portrait-mode plugin to flip between
+        landscape and portrait without restarting. The caller is responsible
+        for initializing ``impl`` first.
+        """
+        with self._lock:
+            layout = impl.layout()  # also re-runs fonts.setup() for this layout
+            self._implementation = impl
+            self._layout = layout
+            self._width = layout['width']
+            self._height = layout['height']
+            self._apply_layout_to_elements()
+        # redraw everything on the new geometry (update() takes the lock itself)
+        self.update(force=True)
+
+    def _apply_layout_to_elements(self):
+        layout = self._layout
+        elems = self._state._state
+
+        for key in ('channel', 'aps', 'uptime', 'shakes'):
+            if key in elems:
+                elems[key].xy = tuple(layout[key])
+                elems[key].label_font = fonts.Bold
+                elems[key].text_font = fonts.Medium
+
+        for key in ('line1', 'line2'):
+            if key in elems:
+                elems[key].xy = list(layout[key])
+
+        for key, font in (('face', fonts.Huge), ('friend_face', fonts.Bold), ('friend_name', fonts.BoldSmall),
+                          ('name', fonts.Bold)):
+            if key in elems:
+                elems[key].xy = tuple(layout[key])
+                elems[key].font = font
+
+        if 'face' in elems:
+            elems['face'].center_width = layout.get('face_width')
+
+        if 'friend_name' in elems:
+            elems['friend_name'].max_x = layout.get('friend_name_max_x')
+
+        if 'status' in elems:
+            status = layout['status']
+            elems['status'].xy = tuple(status['pos'])
+            elems['status'].font = status['font']
+            elems['status'].max_length = status['max']
+            elems['status'].wrapper = TextWrapper(width=status['max'], replace_whitespace=False)
+            elems['status'].max_lines = status.get('lines', 0)
+            elems['status'].center_width = status.get('width')
+
+        if 'last_pwnd_name' in elems:
+            elems['last_pwnd_name'].font = fonts.Medium
+            elems['last_pwnd_name'].max_x = self._last_pwnd_limit()
+
+        if 'mode' in elems:
+            mode = elems['mode']
+            mode.font = fonts.Bold
+            if 'mode_right_edge' in layout:
+                mode_x, mode_y = layout['mode_right_edge']
+                mode.xy = (0, mode_y)
+                mode.right_edge = mode_x
+            else:
+                mode.xy = tuple(layout['mode'])
+                mode.right_edge = None
+
     def _place_last_pwnd(self):
         try:
             elems = self._state._state
             shakes, last = elems['shakes'], elems['last_pwnd_name']
+            fixed = self._layout.get('last_pwnd_name')
+            if fixed is not None:
+                # layouts too narrow to share the PWND row (portrait) give the
+                # name a row of its own
+                last.xy = tuple(fixed)
+                return
             label_w = shakes.label_spacing + 5 * len(shakes.label)
             value_w = shakes.text_font.getlength(str(shakes.value))
             last.xy = (int(shakes.xy[0] + label_w + value_w + 6), shakes.xy[1])

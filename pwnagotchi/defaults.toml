@@ -33,12 +33,14 @@ pwnagotchi_branch = "main"
 [main.plugins.control]
 enabled = true
 iface = true
-iface_pos = "5,32"
 blinds = true
-blinds_pos = "50,32"
+health = true
 wan = true
-wan_pos = "100,0"
 ip = true
+iface_pos = "5,32"
+blinds_pos = "50,32"
+health_pos = "80,32"
+wan_pos = "100,0"
 ip_pos = "0,96"
 net_check_interval = 60
 
@@ -48,7 +50,18 @@ report = false
 
 [main.plugins.watchdog]
 enabled = true
-max_blind_epochs = 15
+interface = "wlan0mon"
+monitor_interface = "wlan0mon"
+check_interval = 1
+journal_interval = 5
+recovery_cooldown = 180
+blind_threshold = 2
+bettercap_grace = 180
+reboot_on_failure = true
+reboot_window = 1800
+reboot_max = 3
+maintenance_marker = "/run/pwnagotchi-automatic-updates-maintenance"
+crash_log = "/var/log/pwnagotchi_crashes.log"
 
 [main.plugins.hashielist]
 enabled = true
@@ -88,6 +101,10 @@ enabled = false
 scale = "celsius"
 orientation = "horizontal"
 fields = "mem, cpu, temp, freq"
+
+[main.plugins.portrait-mode]
+enabled = false
+persist = true
 
 [main.plugins.pisugarx]
 enabled = false

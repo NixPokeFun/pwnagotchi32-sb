@@ -1,334 +1,352 @@
-"""
-watchdog: hardware monitor and interface auto-recovery for pwnagotchi.
-
-Escalation ladder, evaluated once per epoch while the agent is blind:
-    1. Monitor interface vanished from sysfs  -> recreate it, else reboot
-    2. Bettercap REST API unresponsive        -> reboot
-    3. Blind epochs reached the ceiling       -> reboot
-    4. Otherwise                              -> restart a dead wifi.recon
-
-Config (optional):
-    [main.plugins.watchdog]
-    enabled = true
-    max_blind_epochs = 15
-"""
-import logging
-import os
-import threading
-import time
-from datetime import datetime
-
+import logging, os, re, subprocess, threading, time
+from collections import deque
 import pwnagotchi
-import pwnagotchi.plugins as plugins
-
-try:
-    from pwnagotchi import _real_subprocess_run
-except ImportError:  # framework without the patched subprocess
-    from subprocess import run as _real_subprocess_run
-
-DEFAULT_IFACE = 'wlan0mon'
-DEFAULT_MON_START = '/usr/bin/monstart'
-CRASH_LOG = '/var/log/pwnagotchi_crashes.log'
-PWNAGOTCHI_LOG = '/var/log/pwnagotchi.log'
-
-ACT_AT_BLIND = 2          # blind epochs before interface/API faults escalate
-DEFAULT_MAX_BLIND = 15    # absolute blind ceiling
-CRASH_TAIL_LINES = 30     # log lines copied into a crash report
-DISPLAY_SETTLE = 1        # seconds the screen gets to show the status
-RECOVERY_TIMEOUT = 10     # per recovery command
-
-API_TIMEOUT = 5           # bettercap must answer within this
-REBOOT_GRACE = 30         # time the framework reboot gets before we force it
-SYNC_TIMEOUT = 10
-FORCE_TIMEOUT = 10
-CRASH_TAIL_BYTES = 16 * 1024
-CRASH_LOG_MAX = 1024 * 1024
-
-
-def _call_bounded(func, timeout):
-    """Run func() in a daemon thread. Returns (finished, value, error).
-
-    Whatever func blocks on (a REST call without timeout, a child stuck in
-    uninterruptible I/O on a wedged wifi driver), the caller gets control back.
-    """
-    box = {}
-
-    def target():
-        try:
-            box['value'] = func()
-        except Exception as e:
-            box['error'] = e
-
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
-    thread.join(timeout)
-    return not thread.is_alive(), box.get('value'), box.get('error')
-
-
-def _run_bounded(cmd, timeout):
-    """Run cmd through the unpatched subprocess.run. Returns exit code or None."""
-    finished, proc, error = _call_bounded(
-        lambda: _real_subprocess_run(cmd, timeout=timeout, check=False, capture_output=True),
-        timeout + 2,
-    )
-    if not finished:
-        logging.warning(f"[watchdog] Command {cmd} did not finish in {timeout}s")
-    elif error:
-        logging.warning(f"[watchdog] Command {cmd} failed: {error}")
-    return proc.returncode if proc is not None else None
-
+from pwnagotchi import plugins
+import pwnagotchi.ui.faces as faces
 
 class Watchdog(plugins.Plugin):
-    __author__ = 'flippedgannet'
-    __version__ = '1.4.0'
-    __license__ = 'GPL3'
-    __description__ = 'Hardware monitor and interface auto-recovery engine'
+    __author__ = "flippedgannet"
+    __version__ = "2.0.0"
+    __license__ = "GPL3"
+    __description__ = "Combined Wi-Fi, Broadcom and Bettercap watchdog"
+
+    KERNEL_PATTERN = re.compile(r"brcmf_cfg80211_nexmon_set_channel.*?Set Channel failed", re.I)
+    HOP_PATTERN = re.compile(r"wifi error while hopping to channel", re.I)
+    BUSY_PATTERN = re.compile(r"wifi error while hopping to channel.*busy", re.I)
 
     def __init__(self):
-        self.iface = DEFAULT_IFACE
-        self.mon_start_cmd = DEFAULT_MON_START
-        self.max_blind = DEFAULT_MAX_BLIND
-        self.crash_log = CRASH_LOG
-        self.is_rebooting = False
-        self._worker = None
-        self._lock = threading.Lock()
+        self.agent = None
+        self.interface = self.monitor_interface = "mon0"
+        self.brcmfmac = False
+        self.lock = threading.RLock()
+        self.wake = threading.Event()
+        self.stop = threading.Event()
+        self.worker = None
+        self.pending = None
+        self.busy = False
+        self.status, self.detail = "INIT", "initializing"
+        self.resets = self.blind_epochs = 0
+        self.last_check = self.last_scan = self.last_recovery = 0.0
+        self.bettercap_down_since = None
+        self.reboot_times = deque()
+        self.session_probe_lock = threading.Lock()
+        self.session_probe_thread = None
+        self.session_probe_event = None
+        self.session_probe_result = None
 
     def on_loaded(self):
-        main = pwnagotchi.config.get('main', {})
-        self.iface = main.get('iface') or self.options.get('interface', DEFAULT_IFACE)
+        self.options = dict(self.options or {})
+        main = getattr(pwnagotchi, "config", {}).get("main", {})
+        self.interface = str(self.options.get("interface") or main.get("iface") or "mon0")
+        self.monitor_interface = str(self.options.get("monitor_interface") or self.interface)
+        self.check_interval = self._integer("check_interval", 1, 1, 60)
+        self.journal_interval = self._integer("journal_interval", 5, 1, 60)
+        self.cooldown = self._integer("recovery_cooldown", 180, 30, 3600)
+        self.blind_threshold = self._integer("blind_threshold", 2, 1, 20)
+        self.bettercap_grace = self._integer("bettercap_grace", 180, 30, 900)
+        self.reboot_window = self._integer("reboot_window", 1800, 60, 86400)
+        self.reboot_max = self._integer("reboot_max", 3, 0, 20)
+        self.reboot_on_failure = bool(self.options.get("reboot_on_failure", True))
+        self.marker = self.options.get("maintenance_marker",
+            "/run/pwnagotchi-automatic-updates-maintenance")
+        self.crash_log = self.options.get("crash_log", "/var/log/pwnagotchi_crashes.log")
+        self.brcmfmac = self._detect_brcmfmac()
+        self.status, self.detail = "READY", ("brcmfmac" if self.brcmfmac else "generic adapter")
+        self.worker = threading.Thread(target=self._worker_loop, daemon=True, name="watchdog-worker")
+        self.worker.start()
+        logging.info("[watchdog] loaded iface=%s monitor=%s brcmfmac=%s",
+                     self.interface, self.monitor_interface, self.brcmfmac)
 
-        mon_start = main.get('mon_start_cmd')
-        self.mon_start_cmd = DEFAULT_MON_START if mon_start is None else mon_start
+    def _integer(self, key, default, low, high):
+        try: return max(low, min(high, int(self.options.get(key, default))))
+        except (TypeError, ValueError): return default
 
+    def _run(self, args, timeout=8):
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+    def _detect_brcmfmac(self):
+        path = "/sys/class/net/wlan0/device/driver"
         try:
-            self.max_blind = int(self.options.get('max_blind_epochs', DEFAULT_MAX_BLIND))
-        except (TypeError, ValueError):
-            logging.warning(f"[watchdog] Invalid max_blind_epochs, using {DEFAULT_MAX_BLIND}")
-            self.max_blind = DEFAULT_MAX_BLIND
-
-        logging.info(f"[watchdog] Engine active. Monitoring interface: {self.iface}")
-
-    # ---------------------------------------------------------------- epochs
-
-    def on_epoch(self, agent, epoch, epoch_data):
-        if self._busy():
-            return
-
-        blind = getattr(getattr(agent, '_epoch', None), 'blind_for', 0) or 0
-        if blind == 0:
-            return
-
-        # 1. Zero-cost hardware check via sysfs
-        if not self._iface_present():
-            logging.warning(f"[watchdog] Wireless interface {self.iface} missing from sysfs! (blind={blind})")
-            if blind >= ACT_AT_BLIND:
-                self._dispatch(self._recover_or_reboot, agent)
-            return
-
-        # 2. Bettercap REST API reachability
-        session = self._fetch_session(agent)
-        if session is None:
-            logging.warning(f"[watchdog] Bettercap REST API unresponsive (blind={blind})")
-            if blind >= ACT_AT_BLIND:
-                self._dispatch(self._reboot, agent, "Bettercap REST API operational breakdown")
-            return
-
-        # 3. Maximum permissible blind runtime
-        if blind >= self.max_blind:
-            logging.warning(
-                f"[watchdog] Absolute blind ceiling breached ({blind}/{self.max_blind}). Triggering reboot."
-            )
-            self._dispatch(self._reboot, agent, f"Exceeded maximum blind threshold of {self.max_blind}")
-            return
-
-        # 4. In-place healing of the wifi capture loop
-        self._heal_wifi_module(agent, session)
-
-    # ------------------------------------------------------------ checks
-
-    def _iface_present(self):
-        return os.path.exists(f"/sys/class/net/{self.iface}")
-
-    @staticmethod
-    def _fetch_session(agent):
-        """Bettercap session dict, or None if the API is down or hangs."""
-        finished, session, error = _call_bounded(agent.session, API_TIMEOUT)
-        if not finished:
-            logging.warning(f"[watchdog] Bettercap API gave no answer within {API_TIMEOUT}s")
-        elif error:
-            logging.warning(f"[watchdog] Bettercap API error: {error}")
-        return session if finished and error is None else None
-
-    # ---------------------------------------------------------- recovery
-
-    def _recover_or_reboot(self, agent):
-        if self._recover_interface(agent):
-            logging.info("[watchdog] Driver subsystem resurrected. Skipping hard reboot cycle.")
-            return
-        self._reboot(agent, f"Interface {self.iface} permanently detached")
-
-    def _recover_interface(self, agent):
-        """Recreate the monitor interface (`ifconfig up` cannot create a missing one)."""
-        logging.info(f"[watchdog] Initiating monitor interface recovery for {self.iface}...")
-
-        if self.mon_start_cmd:
-            rc = _run_bounded(['/bin/sh', '-c', self.mon_start_cmd], RECOVERY_TIMEOUT)
-            if rc != 0:
-                logging.warning(f"[watchdog] mon_start_cmd finished with exit code {rc}")
-        _run_bounded(['ip', 'link', 'set', self.iface, 'up'], RECOVERY_TIMEOUT)
-
-        if not self._iface_present():
-            logging.error(f"[watchdog] In-place interface recovery failed: {self.iface} is still missing")
-            return False
-
-        # Bettercap lost the old interface, so its recon has to be rebound.
-        self._restart_recon(agent, stop_first=True)
-        return True
-
-    def _heal_wifi_module(self, agent, session):
-        """Restart a dead wifi.recon thread."""
-        wifi_active = any(
-            m.get('name') == 'wifi' and m.get('running') for m in session.get('modules', [])
-        )
-        if not wifi_active:
-            logging.info("[watchdog] wifi.recon processing thread halted. Forcing state reset...")
-            self._restart_recon(agent, stop_first=False)
-
-    @staticmethod
-    def _restart_recon(agent, stop_first):
-        def restart():
-            agent._reset_wifi_settings()
-            if stop_first and hasattr(agent, 'stop_module'):
-                agent.stop_module('wifi.recon')
-            agent.start_module('wifi.recon')
-
-        finished, _, error = _call_bounded(restart, RECOVERY_TIMEOUT)
-        if not finished:
-            logging.warning(f"[watchdog] wifi.recon restart did not finish in {RECOVERY_TIMEOUT}s")
-        elif error:
-            logging.warning(f"[watchdog] wifi.recon restart failed: {error}")
-
-    # ------------------------------------------------------------ reboot
-
-    def _reboot(self, agent, reason):
-        """Dump diagnostics, show the reason, reboot. Returns only if every reboot path failed."""
-        self.is_rebooting = True
-        logging.critical(f"[watchdog] CRITICAL STATE: {reason}. Initiating graceful sequence.")
-
-        self._dump_crash_info(reason)
-        view, original_update = self._freeze_display(agent, reason)
-
-        finished, _, error = _call_bounded(agent._save_recovery_data, RECOVERY_TIMEOUT)
-        if not finished or error:
-            logging.warning(f"[watchdog] Session state synchronization failed: {error or 'timeout'}")
-
-        time.sleep(DISPLAY_SETTLE)
-        self._reboot_system()
-
-        # Still alive after every attempt: resume normal operation instead of hanging.
-        logging.critical("[watchdog] Every reboot path failed. Resuming monitoring.")
-        if view is not None:
-            view.update = original_update
-        self.is_rebooting = False
-
-    @staticmethod
-    def _freeze_display(agent, reason):
-        """Show the status and stop further redraws. Returns (view, original update)."""
-        try:
-            view = agent.view()
-            original_update = view.update
-            view.set('status', f"Fixing: {reason}")
-            view.update(force=True)
-            view.update = lambda *args, **kwargs: None
-            return view, original_update
-        except Exception as e:
-            logging.warning(f"[watchdog] Failed to detach display rendering pipeline: {e}")
-            return None, None
-
-    def _reboot_system(self):
-        """Ask the framework to reboot; force it if the system is still up after the grace period."""
-        deadline = time.monotonic() + REBOOT_GRACE
-        finished, _, error = _call_bounded(pwnagotchi.reboot, REBOOT_GRACE)
-
-        if error:
-            logging.error(f"[watchdog] Core reboot failed: {error}. Cascading to raw shell backup.")
-        else:
-            # reboot() may return as soon as the shutdown is merely requested.
-            time.sleep(max(0, deadline - time.monotonic()))
-            state = "returned" if finished else "has not returned"
-            logging.error(
-                f"[watchdog] System still up {REBOOT_GRACE}s after the core reboot request ({state}). Forcing reboot."
-            )
-
-        self._force_reboot()
-
-    @staticmethod
-    def _force_reboot():
-        _call_bounded(os.sync, SYNC_TIMEOUT)
-        _run_bounded(['reboot', '-f'], FORCE_TIMEOUT)
-
-        # reboot -f did not take effect either: ask the kernel directly.
-        try:
-            with open('/proc/sysrq-trigger', 'w') as f:
-                f.write('b')
-        except OSError as e:
-            logging.critical(f"[watchdog] Complete hardware kernel panic state. Force drop: {e}")
-
-    # ------------------------------------------------------- diagnostics
-
-    def _dump_crash_info(self, reason):
-        """Append a crash report (reason + log tail) and make sure it reaches the disk."""
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            entry = f"=== WATCHDOG CRASH REPORT [{now}] :: Reason: {reason} ===\n"
-            entry += self._tail(PWNAGOTCHI_LOG, CRASH_TAIL_LINES)
-
-            self._rotate_crash_log()
-            with open(self.crash_log, 'a', encoding='utf-8') as f:
-                f.write(entry + "\n")
-                f.flush()
-                os.fsync(f.fileno())  # the reboot may follow immediately
-        except Exception as e:
-            logging.error(f"[watchdog] Diagnostics context dump processing error: {e}")
-
-    @staticmethod
-    def _tail(path, lines):
-        """Last `lines` lines of a file, reading only its end."""
-        try:
-            with open(path, 'rb') as f:
-                f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell() - CRASH_TAIL_BYTES))
-                data = f.read().decode('utf-8', errors='ignore')
-        except OSError:
-            return ''
-        return "\n".join(data.splitlines()[-lines:]) + "\n"
-
-    def _rotate_crash_log(self):
-        try:
-            if os.path.getsize(self.crash_log) > CRASH_LOG_MAX:
-                os.replace(self.crash_log, self.crash_log + '.old')
+            if os.path.exists(path):
+                return os.path.basename(os.readlink(path)) == "brcmfmac"
         except OSError:
             pass
-
-    # ----------------------------------------------------------- workers
-
-    def _busy(self):
-        return self._worker is not None and self._worker.is_alive()
-
-    def _dispatch(self, task, *args):
-        """Run slow recovery/reboot work off the epoch callback, one task at a time."""
-        with self._lock:
-            if self._busy():
-                return
-            self._worker = threading.Thread(
-                target=self._run_task, args=(task, *args), daemon=True, name='watchdog-worker',
-            )
-            self._worker.start()
-
-    def _run_task(self, task, *args):
         try:
-            task(*args)
+            result = self._run(["lsmod"], 3)
+            return result.returncode == 0 and any(
+                line.split() and line.split()[0] == "brcmfmac"
+                for line in result.stdout.splitlines())
         except Exception:
-            logging.exception("[watchdog] Recovery task crashed")
-        finally:
-            self.is_rebooting = False
+            return False
+
+    def on_ready(self, agent):
+        self.agent = agent
+        self._queue("watchdog", "startup check")
+
+    def on_epoch(self, agent, epoch, epoch_data):
+        if self.stop.is_set() or os.path.exists(self.marker): return
+        self.agent = agent
+        now = time.time()
+        if now - self.last_check < self.check_interval: return
+        self.last_check = now
+        self.blind_epochs = int(getattr(getattr(agent, "_epoch", None), "blind_for", 0) or 0)
+        if self.blind_epochs >= self.blind_threshold:
+            self._queue("watchdog", "blind epoch threshold reached")
+            return
+        if now - self.last_scan < self.journal_interval or now - self.last_recovery < self.cooldown:
+            return
+        self.last_scan = now
+        if self.brcmfmac:
+            kernel = self._journal(kernel=True)
+            matches = len(self.KERNEL_PATTERN.findall(kernel))
+            if matches >= 3:
+                logging.warning("[watchdog] FixBRCMF signature: %d matches in last 10 kernel lines", matches)
+                self._queue("brcmf", "Nexmon Set Channel failure signature")
+                return
+        journal = self._journal(kernel=False)
+        if len(self.HOP_PATTERN.findall(journal)) >= 5:
+            self._queue("recon", "channel hopping errors >= 5 in journal tail")
+
+    def on_bcap_sys_log(self, agent, event):
+        if os.path.exists(self.marker): return
+        data = event.get("data") if isinstance(event, dict) else None
+        message = data.get("Message") if isinstance(data, dict) else None
+        if (isinstance(message, str) and self.BUSY_PATTERN.search(message)
+                and time.time() - self.last_recovery >= self.cooldown):
+            self._queue("recon", "Bettercap reported busy channel hopping")
+
+    def get_status(self):
+        with self.lock:
+            return {"status": self.status, "detail": self.detail,
+                    "resets": self.resets, "busy": self.busy,
+                    "blind_epochs": self.blind_epochs}
+
+    def _set(self, status, detail):
+        with self.lock:
+            self.status, self.detail = status, str(detail)[:80]
+
+    def _queue(self, action, reason):
+        with self.lock:
+            if self.busy or self.pending: return
+            self.pending = (action, reason)
+            self.status, self.detail = "WORK", reason[:80]
+            self.wake.set()
+
+    def _worker_loop(self):
+        while not self.stop.is_set():
+            self.wake.wait(1)
+            self.wake.clear()
+            if self.stop.is_set(): break
+            with self.lock:
+                job, self.pending = self.pending, None
+                if not job: continue
+                self.busy = True
+            try:
+                if os.path.exists(self.marker):
+                    self._set("PAUSE", "maintenance marker present")
+                elif job[0] == "brcmf": self._brcmf_recovery(job[1])
+                elif job[0] == "recon": self._recon_flip(job[1])
+                else: self._watchdog_check(job[1])
+            except Exception:
+                logging.exception("[watchdog] worker action failed")
+                self._set("ERR", "worker exception")
+            finally:
+                with self.lock: self.busy = False
+
+    def _journal(self, kernel):
+        args = ["journalctl", "-n10"]
+        if kernel: args.append("-k")
+        args.append("--no-pager")
+        try:
+            result = self._run(args, 4)
+            return result.stdout[-12000:] if result.returncode == 0 else ""
+        except Exception as exc:
+            logging.warning("[watchdog] journal read failed: %s", exc)
+            return ""
+
+    def _exists(self):
+        return os.path.exists("/sys/class/net/" + self.monitor_interface)
+
+    def _up(self):
+        try:
+            r = self._run(["ip", "-brief", "link", "show", self.monitor_interface], 3)
+            return r.returncode == 0 and "UP" in r.stdout
+        except Exception: return False
+
+    def _bettercap(self, command):
+        if self.agent is None: raise RuntimeError("Bettercap agent unavailable")
+        result = self.agent.run(command)
+        if not isinstance(result, dict) or not result.get("success", False):
+            raise RuntimeError("Bettercap command failed: %r" % (result,))
+        return result
+
+    def _watchdog_check(self, reason):
+        if os.path.exists(self.marker):
+            self._set("PAUSE", "maintenance in progress"); return
+        now = time.time()
+        try:
+            active = self._run(["systemctl", "is-active", "--quiet", "bettercap"], 3).returncode == 0
+        except Exception: active = False
+        if not active:
+            if self.bettercap_down_since is None: self.bettercap_down_since = now
+            if now - self.bettercap_down_since < self.bettercap_grace:
+                self._set("CHK", "waiting for Bettercap grace period"); return
+            self._diagnostics("Bettercap service inactive")
+            self._restart_bettercap(); return
+        self.bettercap_down_since = None
+        if self.brcmfmac and not self._exists():
+            self._brcmf_recovery("monitor interface missing"); return
+        if self.blind_epochs >= self.blind_threshold:
+            if not self._up() and self.brcmfmac:
+                self._brcmf_recovery("monitor interface down")
+            else:
+                self._recon_flip("blind epoch threshold reached")
+            return
+        probe = self._probe_bettercap_session(timeout=2.0)
+        if probe is not True:
+            logging.warning("[watchdog] Bettercap API probe failed or timed out")
+            self._restart_bettercap()
+            return
+        self._set("OK", "monitoring healthy")
+
+    def _probe_bettercap_session(self, timeout=2.0):
+        """Run potentially blocking session() outside the watchdog worker."""
+        with self.session_probe_lock:
+            if self.session_probe_thread and self.session_probe_thread.is_alive():
+                return False
+            event = threading.Event()
+            self.session_probe_event = event
+            self.session_probe_result = None
+
+            def probe():
+                try:
+                    self.session_probe_result = (
+                        self.agent is not None and self.agent.session() is not None
+                    )
+                except Exception as exc:
+                    logging.debug("[watchdog] session probe exception: %s", exc)
+                    self.session_probe_result = False
+                finally:
+                    event.set()
+
+            self.session_probe_thread = threading.Thread(
+                target=probe, daemon=True, name="watchdog-session-probe"
+            )
+            self.session_probe_thread.start()
+        if not event.wait(timeout):
+            return False
+        return self.session_probe_result is True
+
+    def _recon_flip(self, reason):
+        self.last_recovery = time.time()
+        self._set("FIX", "restarting wifi.recon")
+        try:
+            self._bettercap("wifi.recon off; wifi.recon on")
+            self._set("OK", "wifi.recon restarted")
+        except Exception as exc:
+            logging.warning("[watchdog] recon flip failed (%s): %s", reason, exc)
+            if self.brcmfmac: self._brcmf_recovery("recon restart failed")
+            else: self._restart_bettercap()
+
+    def _find_phy(self):
+        result = self._run(["iw", "phy"], 5)
+        match = re.search(r"^Wiphy\s+(\S+)", result.stdout, re.M)
+        return match.group(1) if match else None
+
+    def _brcmf_recovery(self, reason):
+        if not self.brcmfmac:
+            self._set("SKIP", "Broadcom recovery disabled for external adapter"); return
+        if time.time() - self.last_recovery < self.cooldown:
+            self._set("WAIT", "recovery cooldown"); return
+        self.last_recovery = time.time()
+        self._set("FIX", "recovering Broadcom monitor interface")
+        logging.warning("[watchdog] Broadcom recovery: %s", reason)
+        try:
+            try: self._bettercap("wifi.recon off")
+            except Exception as exc: logging.debug("[watchdog] recon-off: %s", exc)
+            if self._exists():
+                self._run(["ip", "link", "set", self.monitor_interface, "down"], 4)
+                self._run(["iw", "dev", self.monitor_interface, "del"], 4)
+            if self.monitor_interface == "wlan0mon":
+                self._run(["monstop"], 15)
+                started = self._run(["monstart"], 30)
+                if started.returncode: raise RuntimeError("monstart failed: " + started.stderr[-400:])
+            else:
+                unloaded = self._run(["modprobe", "-r", "brcmfmac"], 12)
+                if unloaded.returncode:
+                    logging.warning("[watchdog] modprobe -r: %s", unloaded.stderr.strip())
+                loaded = self._run(["modprobe", "brcmfmac"], 15)
+                if loaded.returncode: raise RuntimeError("modprobe brcmfmac failed: " + loaded.stderr[-400:])
+                time.sleep(5)
+                phy = self._find_phy()
+                if not phy: raise RuntimeError("wireless PHY not found")
+                add = self._run(["iw", "phy", phy, "interface", "add",
+                                 self.monitor_interface, "type", "monitor"], 8)
+                if add.returncode and not self._exists():
+                    raise RuntimeError("monitor interface creation failed: " + add.stderr[-400:])
+                up = self._run(["ip", "link", "set", self.monitor_interface, "up"], 5)
+                if up.returncode: raise RuntimeError("monitor interface could not be brought up")
+            if not self._exists(): raise RuntimeError("monitor interface still missing")
+            self._bettercap("set wifi.interface %s" % self.monitor_interface)
+            time.sleep(2)
+            self._bettercap("wifi.clear; wifi.recon on")
+            self.resets += 1
+            self._set("OK", "Broadcom recovery complete")
+        except Exception as exc:
+            logging.exception("[watchdog] Broadcom recovery failed")
+            self._diagnostics("Broadcom recovery failed: %s" % exc)
+            if self.reboot_on_failure: self._reboot("Broadcom recovery failed")
+            else: self._set("ERR", "Broadcom recovery failed")
+
+    def _restart_bettercap(self):
+        self._set("FIX", "restarting Bettercap service")
+        try:
+            result = self._run(["systemctl", "restart", "bettercap"], 20)
+            if result.returncode == 0:
+                self.bettercap_down_since = None
+                self._set("OK", "Bettercap service restarted"); return
+            logging.error("[watchdog] Bettercap restart: %s", result.stderr[-400:])
+        except Exception: logging.exception("[watchdog] Bettercap restart failed")
+        self._diagnostics("Bettercap restart failed")
+        if self.reboot_on_failure: self._reboot("Bettercap restart failed")
+        else: self._set("ERR", "Bettercap restart failed")
+
+    def _diagnostics(self, reason):
+        try:
+            chunks = ["\n===== %s | %s =====\n" % (time.strftime("%F %T"), reason)]
+            for path in ("/etc/pwnagotchi/log/pwnagotchi.log", "/etc/pwnagotchi/log/bettercap.log"):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        chunks.append("".join(deque(f, maxlen=40)))
+                except OSError: chunks.append("[missing %s]\n" % path)
+            for args in (["dmesg", "--ctime"], ["journalctl", "-u", "bettercap", "-n40", "--no-pager"]):
+                try: chunks.append(self._run(args, 5).stdout[-10000:])
+                except Exception as exc: chunks.append("diagnostic failed: %s\n" % exc)
+            os.makedirs(os.path.dirname(self.crash_log), exist_ok=True)
+            with open(self.crash_log, "a", encoding="utf-8") as f: f.write("\n".join(chunks))
+        except Exception: logging.exception("[watchdog] diagnostic write failed")
+
+    def _reboot(self, reason):
+        now = time.time()
+        while self.reboot_times and now - self.reboot_times[0] > self.reboot_window:
+            self.reboot_times.popleft()
+        if len(self.reboot_times) >= self.reboot_max:
+            self._set("LOCK", "reboot budget exhausted")
+            logging.critical("[watchdog] reboot suppressed: %s", reason); return
+        self.reboot_times.append(now)
+        self._set("BOOT", reason)
+        self._diagnostics(reason)
+        try:
+            if self.agent and hasattr(self.agent, "view"):
+                ui = self.agent.view()
+                if ui: ui.update(force=True, new_data={
+                    "status": "Watchdog recovery failed. Rebooting.", "face": faces.BROKEN})
+        except Exception: pass
+        logging.critical("[watchdog] rebooting: %s", reason)
+        pwnagotchi.reboot()
+
+    def on_unload(self, ui):
+        self.stop.set()
+        self.wake.set()
+        if self.worker and self.worker.is_alive(): self.worker.join(timeout=2)
+        logging.info("[watchdog] unloaded")
