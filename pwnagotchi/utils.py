@@ -237,6 +237,19 @@ def load_config(args):
     elif config['ui']['display']['type'] in ('ws_4', 'ws4', 'waveshare_4', 'waveshare4'):
         config['ui']['display']['type'] = 'waveshare_4'
 
+    # portrait (upright, 122x250) variants of the 2.13" panels, see the portrait-mode plugin
+    elif config['ui']['display']['type'] in ('ws_1_portrait', 'ws1_portrait', 'waveshare_1_portrait', 'waveshare1_portrait'):
+        config['ui']['display']['type'] = 'waveshare_1_portrait'
+
+    elif config['ui']['display']['type'] in ('ws_2_portrait', 'ws2_portrait', 'waveshare_2_portrait', 'waveshare2_portrait'):
+        config['ui']['display']['type'] = 'waveshare_2_portrait'
+
+    elif config['ui']['display']['type'] in ('ws_3_portrait', 'ws3_portrait', 'waveshare_3_portrait', 'waveshare3_portrait'):
+        config['ui']['display']['type'] = 'waveshare_3_portrait'
+
+    elif config['ui']['display']['type'] in ('ws_4_portrait', 'ws4_portrait', 'waveshare_4_portrait', 'waveshare4_portrait'):
+        config['ui']['display']['type'] = 'waveshare_4_portrait'
+
     elif config['ui']['display']['type'] in ('waveshare2in13b_v3', 'waveshare2in13b_v3', 'ws213bv3', 'waveshare_213bv3', 'waveshare213inb_v3'):
         config['ui']['display']['type'] = 'waveshare2in13b_v3'
 
