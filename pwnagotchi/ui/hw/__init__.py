@@ -8,6 +8,8 @@ from pwnagotchi.ui.hw.waveshare2in13 import WaveshareV1
 from pwnagotchi.ui.hw.waveshare2in13_V2 import WaveshareV2
 from pwnagotchi.ui.hw.waveshare2in13_V3 import WaveshareV3
 from pwnagotchi.ui.hw.waveshare2in13_V4 import WaveshareV4
+from pwnagotchi.ui.hw.waveshare2in13_portrait import (WaveshareV1Portrait, WaveshareV2Portrait,
+                                                      WaveshareV3Portrait, WaveshareV4Portrait)
 from pwnagotchi.ui.hw.waveshare1in44lcd import Waveshare144lcd
 from pwnagotchi.ui.hw.waveshare2in13bc import Waveshare213bc
 from pwnagotchi.ui.hw.waveshare2in13d import Waveshare213d
@@ -76,6 +78,18 @@ def display_for(config):
 
     elif config['ui']['display']['type'] == 'waveshare_4':
         return WaveshareV4(config)
+
+    elif config['ui']['display']['type'] == 'waveshare_1_portrait':
+        return WaveshareV1Portrait(config)
+
+    elif config['ui']['display']['type'] == 'waveshare_2_portrait':
+        return WaveshareV2Portrait(config)
+
+    elif config['ui']['display']['type'] == 'waveshare_3_portrait':
+        return WaveshareV3Portrait(config)
+
+    elif config['ui']['display']['type'] == 'waveshare_4_portrait':
+        return WaveshareV4Portrait(config)
 
     elif config['ui']['display']['type'] == 'waveshare2in13bc':
         return Waveshare213bc(config)

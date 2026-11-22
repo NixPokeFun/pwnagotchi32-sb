@@ -62,7 +62,8 @@ class FilledRect(Widget):
 
 class Text(Widget):
     def __init__(self, value="", position=(0, 0), font=None, color=0, wrap=False,
-                 max_length=0, png=False, right_edge=None, max_x=None):
+                 max_length=0, png=False, right_edge=None, max_x=None,
+                 center_width=None, max_lines=0):
         super().__init__(position, color)
         self.value = value
         self.font = font
@@ -72,6 +73,12 @@ class Text(Widget):
         self.png = png
         self.right_edge = right_edge
         self.max_x = max_x
+        # when set, the text is centered inside a column that starts at xy[0]
+        # and is center_width pixels wide (used by the portrait layouts)
+        self.center_width = center_width
+        # when set, text beyond this many lines is dropped so it cannot grow
+        # into the element below it (0 = unlimited)
+        self.max_lines = max_lines
 
     def draw(self, canvas, drawer):
         if self.value is not None:
@@ -80,7 +87,15 @@ class Text(Widget):
                     text = '\n'.join(self.wrapper.wrap(self.value))
                 else:
                     text = self.value
-                if self.right_edge is not None:
+                if self.max_lines:
+                    lines = text.split('\n')
+                    if len(lines) > self.max_lines:
+                        text = '\n'.join(lines[:self.max_lines])
+                if self.center_width:
+                    center_x = self.xy[0] + self.center_width / 2
+                    drawer.text((center_x, self.xy[1]), text, font=self.font, fill=self.color,
+                                anchor="ma", align="center")
+                elif self.right_edge is not None:
                     drawer.text((self.right_edge, self.xy[1]), text, font=self.font,
                                 fill=self.color, anchor="ra")
                 else:
