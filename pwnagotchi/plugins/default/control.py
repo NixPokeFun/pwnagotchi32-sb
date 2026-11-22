@@ -24,7 +24,7 @@ class Control(plugins.Plugin):
     _BT_PLUGIN = "bt-pan"
     _DEFAULTS = {
         "iface_pos": "5,32", "blinds_pos": "50,32",
-        "health_pos": "85,32", "wan_pos": "100,0", "ip_pos": "0,96",
+        "health_pos": "80,32", "wan_pos": "100,0", "ip_pos": "0,96",
     }
 
     def __init__(self):
