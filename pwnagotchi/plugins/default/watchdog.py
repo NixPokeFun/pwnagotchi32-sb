@@ -6,7 +6,7 @@ import pwnagotchi.ui.faces as faces
 
 class Watchdog(plugins.Plugin):
     __author__ = "flippedgannet"
-    __version__ = "1.0.0"
+    __version__ = "2.0.0"
     __license__ = "GPL3"
     __description__ = "Combined Wi-Fi, Broadcom and Bettercap watchdog"
 
