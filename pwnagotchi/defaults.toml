@@ -39,10 +39,10 @@ wan = true
 ip = true
 iface_pos = "5,32"
 blinds_pos = "50,32"
-health_pos = "82,32"
+health_pos = "80,32"
 wan_pos = "100,0"
 ip_pos = "0,96"
-net_check_interval = 30
+net_check_interval = 60
 
 [main.plugins.grid]
 enabled = true
